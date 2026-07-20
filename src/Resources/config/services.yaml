@@ -1,0 +1,125 @@
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+        public: false
+        bind:
+            # Services that need the project root take it via this bound argument.
+            string $projectDir: '%kernel.project_dir%'
+
+    _instanceof:
+        Vtinnovations\Migrator\Job\StepInterface:
+            tags: ['vtinnovations_migrator.step']
+
+    # --- Config / infrastructure -------------------------------------------------
+    # Paths + ConfigStore are fetched from the container by the BE_MOD callback (no DI there),
+    # so they must be public.
+    Vtinnovations\Migrator\Config\Paths:
+        public: true
+        arguments:
+            $scratchDir: '%vtinnovations_migrator.scratch_dir%'
+
+    Vtinnovations\Migrator\Config\ConfigStore:
+        public: true
+    Vtinnovations\Migrator\Config\EnvFileReader: ~
+    Vtinnovations\Migrator\Config\ConfigReconciler: ~
+    Vtinnovations\Migrator\Security\TokenManager:
+        public: true
+
+    # License verification (PAID-ONLY). Verifier = HTTP wrapper, Manager = cached state + gate,
+    # Guard = controller helper. http_client bound explicitly so we don't depend on the
+    # HttpClientInterface autowire alias being present.
+    Vtinnovations\Migrator\Security\LicenseVerifier:
+        arguments:
+            $client: '@http_client'
+    Vtinnovations\Migrator\Security\LicenseManager:
+        public: true
+    Vtinnovations\Migrator\Security\LicenseGuard: ~
+
+    # --- Manifest ----------------------------------------------------------------
+    Vtinnovations\Migrator\Manifest\ManifestStore: ~
+
+    # --- Preflight probes --------------------------------------------------------
+    Vtinnovations\Migrator\Preflight\EnvironmentProbe: ~
+    Vtinnovations\Migrator\Preflight\RootPageScanner: ~
+    Vtinnovations\Migrator\Preflight\DiskSpaceProbe: ~
+    Vtinnovations\Migrator\Preflight\UrlCandidateScanner: ~
+    Vtinnovations\Migrator\Preflight\ComposerAuditProbe: ~
+    Vtinnovations\Migrator\Preflight\ComposerAutoFix: ~
+
+    # --- Export engines ----------------------------------------------------------
+    Vtinnovations\Migrator\Database\DatabaseDumper: ~
+    Vtinnovations\Migrator\Archive\FileArchiver: ~
+    Vtinnovations\Migrator\Archive\SecretsVault: ~
+
+    # --- Import engines ----------------------------------------------------------
+    Vtinnovations\Migrator\Archive\TarGzReader: ~
+    Vtinnovations\Migrator\Database\DatabaseRestorer: ~
+    Vtinnovations\Migrator\Url\SerializeSafeReplacer: ~
+
+    # --- Mode B transfer ---------------------------------------------------------
+    Vtinnovations\Migrator\Transfer\PairingStore:
+        public: true
+    Vtinnovations\Migrator\Transfer\ChunkAssembler:
+        public: true
+    Vtinnovations\Migrator\Transfer\PackageBuilder: ~
+    Vtinnovations\Migrator\Transfer\PushClient: ~
+
+    Vtinnovations\Migrator\Controller\IngestController:
+        public: true
+        tags: ['controller.service_arguments']
+
+    Vtinnovations\Migrator\Controller\MigratorController:
+        public: true
+        tags: ['controller.service_arguments']
+        arguments:
+            $csrf: '@contao.csrf.token_manager'
+            $csrfTokenName: '%contao.csrf_token_name%'
+
+    # BE_MOD callback — Contao instantiates with no args, so the class self-fetches
+    # collaborators from the container. Must be public.
+    Vtinnovations\Migrator\BackendModule\MigratorModule:
+        public: true
+
+    # --- Job pipeline ------------------------------------------------------------
+    Vtinnovations\Migrator\Job\JobStore:
+        public: true
+
+    Vtinnovations\Migrator\Job\StepRegistry:
+        arguments:
+            $steps: !tagged_iterator vtinnovations_migrator.step
+
+    Vtinnovations\Migrator\Job\JobRunner:
+        public: true
+        arguments:
+            $timeBudget: '%vtinnovations_migrator.time_budget%'
+            $logger: '@?logger'
+
+    Vtinnovations\Migrator\Job\JobFactory:
+        public: true
+
+    # Unattended progress: ticks active jobs each minute so a migration continues even with no
+    # dashboard open. Lock-safe against concurrent dashboard polls.
+    Vtinnovations\Migrator\Cron\TickActiveJobsCron:
+        tags:
+            - { name: contao.cronjob, interval: minutely, method: __invoke }
+
+    # --- Steps (auto-tagged via _instanceof) -------------------------------------
+    Vtinnovations\Migrator\Job\Step\PreflightStep: ~
+    Vtinnovations\Migrator\Job\Step\DumpDatabaseStep: ~
+    Vtinnovations\Migrator\Job\Step\ArchiveFilesStep: ~
+    Vtinnovations\Migrator\Job\Step\SecretsStep: ~
+    Vtinnovations\Migrator\Job\Step\FinalizeExportStep: ~
+    Vtinnovations\Migrator\Job\Step\UnpackPackageStep: ~
+    Vtinnovations\Migrator\Job\Step\VerifyPackageStep: ~
+    Vtinnovations\Migrator\Job\Step\CompatibilityGateStep: ~
+    Vtinnovations\Migrator\Job\Step\CaptureDestConfigStep: ~
+    Vtinnovations\Migrator\Job\Step\SafetySnapshotStep: ~
+    Vtinnovations\Migrator\Job\Step\ExtractFilesStep: ~
+    Vtinnovations\Migrator\Job\Step\RestoreDatabaseStep: ~
+    Vtinnovations\Migrator\Job\Step\UrlReplaceStep: ~
+    Vtinnovations\Migrator\Job\Step\ConfigReconcileStep: ~
+    Vtinnovations\Migrator\Job\Step\PostMigrationStep: ~
+    Vtinnovations\Migrator\Job\Step\FinalizeImportStep: ~
+    Vtinnovations\Migrator\Job\Step\BuildPackageStep: ~
+    Vtinnovations\Migrator\Job\Step\PushPackageStep: ~

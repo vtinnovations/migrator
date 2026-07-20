@@ -1,0 +1,91 @@
+# Tahericreate Contao Migrator routes.
+#
+# NOTE: a YAML routing file must never carry a top-level key with an empty value — Symfony
+# reads `name:` as a route and fatals "You must define a path ...". Every entry below has a
+# real path, so this file is now a normal route collection.
+
+# Mode B receive endpoints — public, but HMAC-authenticated with the single-use pairing key.
+# finalize is declared first (more specific path) though the extra segment already
+# disambiguates it from the chunk route.
+tcmig_ingest_finalize:
+    path: /migrator/ingest/{session}/finalize
+    methods: [POST]
+    defaults:
+        _controller: Vtinnovations\Migrator\Controller\IngestController::finalize
+    requirements:
+        session: '[A-Za-z0-9_-]+'
+
+tcmig_ingest_chunk:
+    path: /migrator/ingest/{session}
+    methods: [POST]
+    defaults:
+        _controller: Vtinnovations\Migrator\Controller\IngestController::chunk
+    requirements:
+        session: '[A-Za-z0-9_-]+'
+
+# Backend AJAX + download endpoints. Behind the Contao backend firewall via _scope: backend.
+# status() also DRIVES the job — each poll runs one time-budgeted tick.
+tcmig_status:
+    path: /contao/migrator/status/{id}
+    methods: [GET]
+    defaults:
+        _controller: Vtinnovations\Migrator\Controller\MigratorController::status
+        _scope: backend
+    requirements:
+        id: '[A-Za-z0-9-]+'
+
+tcmig_tick:
+    path: /contao/migrator/tick/{id}
+    methods: [GET]
+    defaults:
+        _controller: Vtinnovations\Migrator\Controller\MigratorController::tick
+        _scope: backend
+    requirements:
+        id: '[A-Za-z0-9-]+'
+
+tcmig_download:
+    path: /contao/migrator/download/{id}
+    methods: [GET]
+    defaults:
+        _controller: Vtinnovations\Migrator\Controller\MigratorController::download
+        _scope: backend
+    requirements:
+        id: '[A-Za-z0-9-]+'
+
+# Split-import: the dashboard JS uploads one part per request (sequential, timeout-safe), then
+# calls assemble to reassemble + enqueue the import. Both CSRF-checked, backend firewall.
+tcmig_upload_part:
+    path: /contao/migrator/upload-part/{isess}
+    methods: [POST]
+    defaults:
+        _controller: Vtinnovations\Migrator\Controller\MigratorController::uploadPart
+        _scope: backend
+    requirements:
+        isess: '[a-f0-9]{4,32}'
+
+tcmig_assemble:
+    path: /contao/migrator/assemble/{isess}
+    methods: [POST]
+    defaults:
+        _controller: Vtinnovations\Migrator\Controller\MigratorController::assembleImport
+        _scope: backend
+    requirements:
+        isess: '[a-f0-9]{4,32}'
+
+tcmig_cancel:
+    path: /contao/migrator/cancel/{id}
+    methods: [POST]
+    defaults:
+        _controller: Vtinnovations\Migrator\Controller\MigratorController::cancel
+        _scope: backend
+    requirements:
+        id: '[A-Za-z0-9-]+'
+
+tcmig_delete:
+    path: /contao/migrator/delete/{id}
+    methods: [POST]
+    defaults:
+        _controller: Vtinnovations\Migrator\Controller\MigratorController::delete
+        _scope: backend
+    requirements:
+        id: '[A-Za-z0-9-]+'

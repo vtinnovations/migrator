@@ -1,0 +1,38 @@
+{
+    "name": "vtinnovations/migrator",
+    "type": "contao-bundle",
+    "description": "Contao Migrator — move a Contao 5 site to a new host. Manual (.tcmig) or direct server-to-server transfer with serialize-safe URL rewriting.",
+    "keywords": ["contao", "migration", "backup", "restore", "clone", "move-host"],
+    "license": "LGPL-3.0-or-later",
+    "authors": [
+        {
+            "name": "V&T Innovations Team",
+            "homepage": "https://www.v-t.one"
+        }
+    ],
+    "require": {
+        "php": "^8.2",
+        "ext-json": "*",
+        "ext-zlib": "*",
+        "contao/core-bundle": "^5.3",
+        "symfony/config": "^6.4 || ^7.0",
+        "symfony/dependency-injection": "^6.4 || ^7.0",
+        "symfony/http-foundation": "^6.4 || ^7.0",
+        "symfony/http-kernel": "^6.4 || ^7.0",
+        "doctrine/dbal": "^3.6 || ^4.0"
+    },
+    "require-dev": {
+        "contao/manager-plugin": "^2.0"
+    },
+    "conflict": {
+        "contao/manager-plugin": "<2.0 || >=3.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Vtinnovations\\Migrator\\": "src/"
+        }
+    },
+    "extra": {
+        "contao-manager-plugin": "Vtinnovations\\Migrator\\ContaoManager\\Plugin"
+    }
+}
