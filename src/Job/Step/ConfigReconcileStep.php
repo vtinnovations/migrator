@@ -69,7 +69,23 @@ final class ConfigReconcileStep implements StepInterface
             }
         }
 
-        $this->reconciler->apply($destConfig, $sourceSecrets);
+        $neutralized = $this->reconciler->apply($destConfig, $sourceSecrets);
+
+        if ([] !== $neutralized) {
+            $keys = implode(', ', $neutralized);
+            $job->meta['configNeedsInput'] = $neutralized;
+            $job->addLog(
+                sprintf(
+                    'The destination provided no value for %s, so the source value(s) were commented out in '
+                    .'.env.local to stop the moved site booting against the SOURCE. Set the NEW host value(s) '
+                    .'there before going live%s.',
+                    $keys,
+                    \in_array('DATABASE_URL', $neutralized, true) ? ' — DATABASE_URL especially (the site cannot run without the new DB credentials)' : ''
+                ),
+                'warning'
+            );
+            $note .= sprintf(' ⚠ Set %s in .env.local for the new host (source value neutralized).', $keys);
+        }
 
         return StepResult::completeStep(sprintf(
             'Config reconciled: %d destination key(s) restored, %d source secret(s) carried.%s',

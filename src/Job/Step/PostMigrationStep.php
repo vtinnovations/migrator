@@ -60,6 +60,8 @@ final class PostMigrationStep implements StepInterface
 
         [$assetsInstalled, $assetsMsg] = $this->runAssetsInstall($job);
 
+        [$filesServed, $filesMsg] = $this->ensureUploadsServed($job);
+
         $cacheDir = rtrim($this->projectDir, '/\\').'/var/cache';
         $purged = 0;
 
@@ -73,6 +75,7 @@ final class PostMigrationStep implements StepInterface
         $job->meta['postMigration'] = [
             'cachePurged' => $purged,
             'assetsInstalled' => $assetsInstalled,
+            'uploadsServed' => $filesServed,
             // vendor/ shipped → the destination already has the exact source code, no composer
             // install needed. Otherwise it must match the source versions via composer install.
             'composerInstallRequired' => !$vendorShipped,
@@ -104,7 +107,127 @@ final class PostMigrationStep implements StepInterface
             ? 'vendor/ shipped — no composer install needed.'
             : 'Next: run "composer install --no-dev" so the destination matches the source versions.';
 
-        return StepResult::completeStep(sprintf('Cache purged (%d env dir(s)). %s %s', $purged, $assetsTail, $composerTail));
+        return StepResult::completeStep(sprintf('Cache purged (%d env dir(s)). %s%s %s', $purged, $assetsTail, '' !== $filesMsg ? ' '.$filesMsg : '', $composerTail));
+    }
+
+    /**
+     * Guarantee the Contao upload directory is reachable under the web root, so /files/* (uploaded
+     * images AND the theme/layout stylesheets that live there) is served on the destination.
+     *
+     * Contao keeps uploads in <root>/files but the web root is <root>/public, and contao:setup does
+     * NOT create public/files — so a fresh destination can end up with the uploads present at the
+     * project root yet 404 under /files/, leaving the frontend unstyled (no grids, full width). We
+     * only ACT when the web-root entry is missing or an empty leftover dir; a populated dir/symlink
+     * is left untouched. Symlink first (relative), copy as a fallback for hosts that can't symlink.
+     *
+     * @return array{0: bool, 1: string} [served, short message]
+     */
+    private function ensureUploadsServed(Job $job): array
+    {
+        $root = rtrim($this->projectDir, '/\\');
+        $webDir = is_dir($root.'/public') ? $root.'/public' : (is_dir($root.'/web') ? $root.'/web' : null);
+
+        if (null === $webDir) {
+            return [false, ''];
+        }
+
+        $uploadPath = $this->uploadPath();
+        $src = $root.'/'.$uploadPath;
+        $dst = $webDir.'/'.$uploadPath;
+
+        // Nothing to serve if the upload dir is absent or empty.
+        if (!is_dir($src) || $this->isEmptyDir($src)) {
+            return [false, ''];
+        }
+
+        // Already served: a symlink, or a non-empty directory extracted in place.
+        if (is_link($dst) || (is_dir($dst) && !$this->isEmptyDir($dst))) {
+            return [true, ''];
+        }
+
+        // Empty leftover dir → drop it so a symlink can take its place.
+        if (is_dir($dst)) {
+            @rmdir($dst);
+        }
+
+        if (file_exists($dst)) {
+            return [false, ''];
+        }
+
+        // Relative symlink first (../files style), so the tree is not duplicated on disk.
+        if (@symlink('../'.$uploadPath, $dst) && is_dir($dst)) {
+            $job->addLog(sprintf('Linked %s/%s → ../%s so /%s/ is served on the destination.', basename($webDir), $uploadPath, $uploadPath, $uploadPath), 'info');
+
+            return [true, sprintf('Web-root /%s/ link created.', $uploadPath)];
+        }
+
+        // Fallback: copy the tree into the web root (hosts that forbid symlinks).
+        @unlink($dst);
+
+        if ($this->copyTree($src, $dst)) {
+            $job->addLog(sprintf('Copied uploads into %s/%s (symlink unavailable) so /%s/ is served.', basename($webDir), $uploadPath, $uploadPath), 'info');
+
+            return [true, sprintf('Web-root /%s/ populated (copy).', $uploadPath)];
+        }
+
+        $job->addLog(sprintf('Could not make /%s/ web-served automatically — create a symlink %s/%s → ../%s on the destination, or the frontend stays unstyled.', $uploadPath, basename($webDir), $uploadPath, $uploadPath), 'warning');
+
+        return [false, sprintf('⚠ /%s/ not web-served — link %s/%s → ../%s manually.', $uploadPath, basename($webDir), $uploadPath, $uploadPath)];
+    }
+
+    /** Contao upload path (default "files"), read from the booted container when available. */
+    private function uploadPath(): string
+    {
+        try {
+            $container = $this->kernel->getContainer();
+
+            if ($container->hasParameter('contao.upload_path')) {
+                $p = (string) $container->getParameter('contao.upload_path');
+
+                if ('' !== $p && !str_contains($p, '/') && !str_contains($p, '\\')) {
+                    return $p;
+                }
+            }
+        } catch (\Throwable) {
+            // fall through to default
+        }
+
+        return 'files';
+    }
+
+    private function isEmptyDir(string $dir): bool
+    {
+        foreach (new \FilesystemIterator($dir, \FilesystemIterator::SKIP_DOTS) as $ignored) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private function copyTree(string $src, string $dst): bool
+    {
+        if (!@mkdir($dst, 0775, true) && !is_dir($dst)) {
+            return false;
+        }
+
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($src, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+
+        foreach ($items as $item) {
+            $target = $dst.'/'.substr($item->getPathname(), \strlen($src) + 1);
+
+            if ($item->isDir()) {
+                if (!is_dir($target) && !@mkdir($target, 0775, true) && !is_dir($target)) {
+                    return false;
+                }
+            } elseif (!@copy($item->getPathname(), $target)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

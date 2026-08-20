@@ -6,6 +6,7 @@ namespace Vtinnovations\Migrator\Job;
 
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use Vtinnovations\Migrator\Config\EntitlementEvaluator;
 
 /**
  * Advances a single job for one time budget. Holds the job lock for the whole tick so
@@ -19,6 +20,7 @@ final class JobRunner
     public function __construct(
         private readonly JobStore $store,
         private readonly StepRegistry $registry,
+        private readonly EntitlementEvaluator $entitlement,
         private readonly float $timeBudget = 20.0,
         ?LoggerInterface $logger = null,
     ) {
@@ -32,6 +34,16 @@ final class JobRunner
      */
     public function tick(string $jobId): ?JobState
     {
+        // Independent gate at the protected operation itself, not only at the request boundary:
+        // migration work never advances without a valid signed licence, whichever entry point
+        // (backend poll, cron, recovery panel) asked for the tick. The job is left untouched and
+        // resumes unchanged once a licence is active again — nothing is deleted or failed.
+        if (!$this->entitlement->evaluate()->isLicensed()) {
+            $this->logger->warning('Migrator job {id} was not advanced: no valid licence.', ['id' => $jobId]);
+
+            return $this->store->load($jobId)?->state;
+        }
+
         $result = $this->store->withLock($jobId, function () use ($jobId): JobState {
             $job = $this->store->load($jobId);
 

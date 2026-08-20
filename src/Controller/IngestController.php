@@ -7,8 +7,8 @@ namespace Vtinnovations\Migrator\Controller;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Vtinnovations\Migrator\Config\EntitlementEvaluator;
 use Vtinnovations\Migrator\Job\JobFactory;
-use Vtinnovations\Migrator\Security\LicenseGuard;
 use Vtinnovations\Migrator\Security\TokenManager;
 use Vtinnovations\Migrator\Transfer\ChunkAssembler;
 use Vtinnovations\Migrator\Transfer\PairingStore;
@@ -31,13 +31,13 @@ final class IngestController extends AbstractController
         private readonly ChunkAssembler $assembler,
         private readonly TokenManager $tokens,
         private readonly JobFactory $jobs,
-        private readonly LicenseGuard $license,
+        private readonly EntitlementEvaluator $license,
     ) {
     }
 
     public function chunk(Request $request, string $session): JsonResponse
     {
-        if (!$this->license->isLicensed()) {
+        if (!$this->license->evaluate()->isLicensed()) {
             return $this->deny('License required on destination.');
         }
 
@@ -79,7 +79,7 @@ final class IngestController extends AbstractController
 
     public function finalize(Request $request, string $session): JsonResponse
     {
-        if (!$this->license->isLicensed()) {
+        if (!$this->license->evaluate()->isLicensed()) {
             return $this->deny('License required on destination.');
         }
 

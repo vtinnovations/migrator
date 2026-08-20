@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Vtinnovations\Migrator\Controller;
 
 use Contao\CoreBundle\Csrf\ContaoCsrfTokenManager;
+use Contao\CoreBundle\Framework\ContaoFramework;
+use Contao\System;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -17,7 +19,7 @@ use Vtinnovations\Migrator\Config\ConfigStore;
 use Vtinnovations\Migrator\Job\JobFactory;
 use Vtinnovations\Migrator\Job\JobRunner;
 use Vtinnovations\Migrator\Job\JobStore;
-use Vtinnovations\Migrator\Security\LicenseGuard;
+use Vtinnovations\Migrator\Config\EntitlementEvaluator;
 use Vtinnovations\Migrator\Support\Messages;
 use Vtinnovations\Migrator\Transfer\ChunkAssembler;
 use Vtinnovations\Migrator\Transfer\PackageBuilder;
@@ -35,12 +37,22 @@ final class MigratorController extends AbstractController
         private readonly JobStore $store,
         private readonly PackageBuilder $builder,
         private readonly ConfigStore $config,
-        private readonly LicenseGuard $license,
+        private readonly EntitlementEvaluator $license,
         private readonly ChunkAssembler $assembler,
         private readonly JobFactory $jobs,
         private readonly ContaoCsrfTokenManager $csrf,
+        private readonly ContaoFramework $framework,
         private readonly string $csrfTokenName,
     ) {
+    }
+
+    /** Administrator-visible strings come from contao/languages/<lang>/tcmig.php, never from here. */
+    private function t(string $key): string
+    {
+        $this->framework->initialize();
+        System::loadLanguageFile('tcmig');
+
+        return $GLOBALS['TL_LANG']['tcmig'][$key] ?? $key;
     }
 
     /**
@@ -51,8 +63,8 @@ final class MigratorController extends AbstractController
      */
     public function status(Request $request, string $id): JsonResponse
     {
-        if (!$this->license->isLicensed()) {
-            return $this->license->noLicenseResponsePaidOnly();
+        if (!$this->license->evaluate()->isLicensed()) {
+            return $this->noLicense();
         }
 
         $job = $this->store->load($id);
@@ -98,8 +110,8 @@ final class MigratorController extends AbstractController
      */
     public function tick(Request $request, string $id): JsonResponse
     {
-        if (!$this->license->isLicensed()) {
-            return $this->license->noLicenseResponsePaidOnly();
+        if (!$this->license->evaluate()->isLicensed()) {
+            return $this->noLicense();
         }
 
         if (\PHP_SESSION_ACTIVE === session_status()) {
@@ -125,7 +137,7 @@ final class MigratorController extends AbstractController
 
     public function download(Request $request, string $id): Response
     {
-        if (!$this->license->isLicensed()) {
+        if (!$this->license->evaluate()->isLicensed()) {
             throw $this->createAccessDeniedException('License required.');
         }
 
@@ -230,8 +242,8 @@ final class MigratorController extends AbstractController
      */
     public function uploadPart(Request $request, string $isess): JsonResponse
     {
-        if (!$this->license->isLicensed()) {
-            return $this->license->noLicenseResponsePaidOnly();
+        if (!$this->license->evaluate()->isLicensed()) {
+            return $this->noLicense();
         }
 
         if (!$this->validToken($request)) {
@@ -262,8 +274,8 @@ final class MigratorController extends AbstractController
      */
     public function assembleImport(Request $request, string $isess): JsonResponse
     {
-        if (!$this->license->isLicensed()) {
-            return $this->license->noLicenseResponsePaidOnly();
+        if (!$this->license->evaluate()->isLicensed()) {
+            return $this->noLicense();
         }
 
         if (!$this->validToken($request)) {
@@ -297,8 +309,8 @@ final class MigratorController extends AbstractController
     /** Request cancellation of a running/pending/paused job (stops it mid-tick). */
     public function cancel(Request $request, string $id): JsonResponse
     {
-        if (!$this->license->isLicensed()) {
-            return $this->license->noLicenseResponsePaidOnly();
+        if (!$this->license->evaluate()->isLicensed()) {
+            return $this->noLicense();
         }
 
         if (!$this->validToken($request)) {
@@ -313,8 +325,8 @@ final class MigratorController extends AbstractController
     /** Delete a finished/failed/cancelled job and all its artefacts. Refuses while still active. */
     public function delete(Request $request, string $id): JsonResponse
     {
-        if (!$this->license->isLicensed()) {
-            return $this->license->noLicenseResponsePaidOnly();
+        if (!$this->license->evaluate()->isLicensed()) {
+            return $this->noLicense();
         }
 
         if (!$this->validToken($request)) {
@@ -337,6 +349,17 @@ final class MigratorController extends AbstractController
         return $this->csrf->isTokenValid(
             new CsrfToken($this->csrfTokenName, (string) $request->request->get('REQUEST_TOKEN', ''))
         );
+    }
+
+    /** Standard gate response when the instance has no valid licence. */
+    private function noLicense(): JsonResponse
+    {
+        return new JsonResponse([
+            'success' => false,
+            'reason' => 'no_license',
+            'error' => $this->t('license_locked'),
+            'cta_url' => 'https://v-t.one',
+        ]);
     }
 
     /** JSON error localised to the backend user's language. */

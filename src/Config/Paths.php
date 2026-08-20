@@ -101,6 +101,34 @@ final class Paths
     }
 
     /**
+     * Authoritative entitlement state: one atomically-swapped JSON holding the exact licence bytes
+     * (base64), the signed integrity envelope, and the matched domain. Single file so the licence
+     * bytes and their integrity metadata can never be left mismatched by a crash mid-write.
+     */
+    public function entitlementFile(): string
+    {
+        return $this->scratch().'/entitlement.json';
+    }
+
+    /** Backup of the last valid entitlement pair, written before an atomic swap for rollback. */
+    public function entitlementBackupFile(): string
+    {
+        return $this->scratch().'/entitlement.bak.json';
+    }
+
+    /** Exclusive lock for entitlement read-modify-write (activation / refresh / push / remove). */
+    public function entitlementLockFile(): string
+    {
+        return $this->scratch().'/entitlement.lock';
+    }
+
+    /** Bounded replay/idempotency journal for inbound server-initiated updater requests. */
+    public function updaterJournalFile(): string
+    {
+        return $this->scratch().'/updater-journal.json';
+    }
+
+    /**
      * Strip path separators and traversal from an externally-supplied id segment.
      */
     private function safe(string $segment): string

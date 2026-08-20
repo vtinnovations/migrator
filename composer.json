@@ -22,15 +22,31 @@
         "doctrine/dbal": "^3.6 || ^4.0"
     },
     "require-dev": {
-        "contao/manager-plugin": "^2.0"
+        "contao/manager-plugin": "^2.0",
+        "phpunit/phpunit": "^10.5 || ^11.0",
+        "symfony/http-client": "^6.4 || ^7.0",
+        "symfony/yaml": "^6.4 || ^7.0"
     },
     "conflict": {
-        "contao/manager-plugin": "<2.0 || >=3.0"
+        "contao/manager-plugin": "<2.0 || >=3.0",
+        "doctrine/orm": "3.6.8"
     },
     "autoload": {
         "psr-4": {
             "Vtinnovations\\Migrator\\": "src/"
         }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Vtinnovations\\Migrator\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "release-guard": "@php tools/release-guard.php"
+    },
+    "archive": {
+        "exclude": ["/tests", "/tools", "/phpunit.xml.dist", "/.phpunit.cache"]
     },
     "extra": {
         "contao-manager-plugin": "Vtinnovations\\Migrator\\ContaoManager\\Plugin"

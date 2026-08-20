@@ -45,10 +45,17 @@ final class ConfigReconciler
      * Apply the reconciliation to .env.local: destination-owned keys restored, source-carried
      * secrets injected. Values are written/updated in place; other lines are left untouched.
      *
+     * Dest-owned keys the destination did NOT provide (e.g. a fresh host with no DATABASE_URL of
+     * its own yet) are a trap: the extracted source .env.local carries the SOURCE value for them,
+     * so leaving it would point the moved site at the source's database. Such lines are neutralized
+     * (commented out) and returned so the caller can tell the operator to set the new host's value.
+     *
      * @param array<string,string> $destValues   captured before extract (win)
      * @param array<string,string> $sourceSecrets decrypted from the vault (carried)
+     *
+     * @return list<string> dest-owned keys whose leftover source value was neutralized (need operator input)
      */
-    public function apply(array $destValues, array $sourceSecrets): void
+    public function apply(array $destValues, array $sourceSecrets): array
     {
         $envLocal = rtrim($this->projectDir, '/\\').'/.env.local';
         $lines = is_file($envLocal) ? (file($envLocal, FILE_IGNORE_NEW_LINES) ?: []) : [];
@@ -65,7 +72,13 @@ final class ConfigReconciler
             }
         }
 
-        $lines = $this->upsertEnv($lines, $set);
+        // Dest-owned keys the destination could not supply: neutralize any leftover source line.
+        $neutralize = array_values(array_filter(
+            self::DEST_OWNED,
+            static fn (string $k): bool => !\array_key_exists($k, $set),
+        ));
+
+        [$lines, $neutralized] = $this->upsertEnv($lines, $set, $neutralize);
 
         $tmp = $envLocal.'.tmp';
 
@@ -75,17 +88,21 @@ final class ConfigReconciler
         }
 
         @chmod($envLocal, 0640);
+
+        return $neutralized;
     }
 
     /**
      * @param list<string>          $lines
-     * @param array<string, string> $set
+     * @param array<string, string> $set       key => value to upsert
+     * @param list<string>          $neutralize keys whose existing (source) line must be commented out
      *
-     * @return list<string>
+     * @return array{0: list<string>, 1: list<string>} [rewritten lines, keys actually neutralized]
      */
-    private function upsertEnv(array $lines, array $set): array
+    private function upsertEnv(array $lines, array $set, array $neutralize = []): array
     {
         $seen = [];
+        $neutralized = [];
 
         foreach ($lines as $i => $line) {
             $trim = ltrim($line);
@@ -105,6 +122,11 @@ final class ConfigReconciler
             if (\array_key_exists($key, $set)) {
                 $lines[$i] = $key.'='.$this->quote($set[$key]);
                 $seen[$key] = true;
+            } elseif (\in_array($key, $neutralize, true)) {
+                // Leftover source value for a dest-owned key: comment it out so the site does not
+                // boot against the source host. The operator must set the new host's value.
+                $lines[$i] = '# '.$line.'   # neutralized by migrator — set this to the NEW host value';
+                $neutralized[] = $key;
             }
         }
 
@@ -114,7 +136,7 @@ final class ConfigReconciler
             }
         }
 
-        return array_values($lines);
+        return [array_values($lines), array_values(array_unique($neutralized))];
     }
 
     private function quote(string $value): string

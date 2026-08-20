@@ -170,7 +170,7 @@ final class SecretsVault
     private function stripMagic(string $blob): string
     {
         if (!str_starts_with($blob, self::MAGIC)) {
-            throw new \RuntimeException('Not a Tahericreate secrets vault.');
+            throw new \RuntimeException('Not a V&T Innovations secrets vault.');
         }
 
         return substr($blob, \strlen(self::MAGIC));

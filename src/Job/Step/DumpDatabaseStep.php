@@ -142,7 +142,7 @@ final class DumpDatabaseStep implements StepInterface
         }
 
         try {
-            fwrite($handle, "-- Tahericreate Contao Migrator schema dump\n");
+            fwrite($handle, "-- V&T Innovations Contao Migrator schema dump\n");
             fwrite($handle, "SET FOREIGN_KEY_CHECKS=0;\n\n");
 
             foreach ($state['tables'] as $table) {

@@ -19,6 +19,12 @@ class VtinnovationsMigratorExtension extends Extension
         $container->setParameter('vtinnovations_migrator.scratch_dir', $config['scratch_dir']);
         $container->setParameter('vtinnovations_migrator.time_budget', $config['time_budget']);
 
+        // Product identity — fixed code constants, never operator-config (so no request/config can
+        // repoint the licensing destination or forge product identity).
+        $container->setParameter('vtinnovations_migrator.project', 'Migrator');
+        $container->setParameter('vtinnovations_migrator.project_slug', 'migrator');
+        $container->setParameter('vtinnovations_migrator.product_id', 'vt-migrator');
+
         $loader = new YamlFileLoader($container, new FileLocator(__DIR__.'/../Resources/config'));
         $loader->load('services.yaml');
     }

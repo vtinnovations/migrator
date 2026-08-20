@@ -1,4 +1,4 @@
-# Tahericreate Contao Migrator routes.
+# V&T Innovations Contao Migrator routes.
 #
 # NOTE: a YAML routing file must never carry a top-level key with an empty value — Symfony
 # reads `name:` as a route and fatals "You must define a path ...". Every entry below has a
@@ -23,8 +23,23 @@ tcmig_ingest_chunk:
     requirements:
         session: '[A-Za-z0-9_-]+'
 
+# Server-initiated licence updater (Workflow C). Public, no backend login — authenticated solely
+# by the vt-one/request-sig-v1 signature. Path is fixed by the protocol (project_slug = migrator).
+tcmig_license_updater:
+    path: /rest/api/v1/migrator-license-updater
+    methods: [POST]
+    defaults:
+        _controller: Vtinnovations\Migrator\Controller\EntitlementIntakeController
+
+# Licence management owns NO route. Activation, refresh and removal are native Contao DCA
+# callbacks on tl_settings (see contao/dca/tl_settings.php + EventListener/DataContainer/
+# EntitlementFields.php), submitted through Contao's own Settings form. That form already carries
+# the REQUEST_TOKEN and already sits behind the backend firewall, so a bundle-owned route would add
+# a second, weaker submit path for no benefit — and the previous one silently failed whenever a
+# button's `formaction` lost to the enclosing form's own action.
+
 # Backend AJAX + download endpoints. Behind the Contao backend firewall via _scope: backend.
-# status() also DRIVES the job — each poll runs one time-budgeted tick.
+# status() is read-only; tick() drives the job one time-budgeted slice per call.
 tcmig_status:
     path: /contao/migrator/status/{id}
     methods: [GET]

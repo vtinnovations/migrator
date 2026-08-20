@@ -26,15 +26,66 @@ services:
     Vtinnovations\Migrator\Security\TokenManager:
         public: true
 
-    # License verification (PAID-ONLY). Verifier = HTTP wrapper, Manager = cached state + gate,
-    # Guard = controller helper. http_client bound explicitly so we don't depend on the
-    # HttpClientInterface autowire alias being present.
-    Vtinnovations\Migrator\Security\LicenseVerifier:
+    # --- Entitlement (signed schema-2 licensing) ---------------------------------
+    # Crypto primitives + trust anchor. TrustRing/CanonicalJson/DetachedVerifier autowire.
+    Vtinnovations\Migrator\Manifest\CanonicalJson: ~
+    Vtinnovations\Migrator\Manifest\TrustRing: ~
+    Vtinnovations\Migrator\Manifest\DetachedVerifier: ~
+
+    Vtinnovations\Migrator\Config\HostNormalizer: ~
+
+    # public: the DCA status block (EntitlementSummary) is instantiated by Contao with `new`, so it
+    # self-fetches this to show which configured hosts activation can bind to.
+    Vtinnovations\Migrator\Config\HostInventory:
+        public: true
+    Vtinnovations\Migrator\Config\EntitlementModelPolicy: ~
+    Vtinnovations\Migrator\Config\EntitlementStore: ~
+
+    # Invocation + session-entry telemetry (public: the BE module self-fetches it; also a
+    # kernel.terminate listener so the queued POSTs never delay rendering).
+    Vtinnovations\Migrator\EventListener\TelemetrySignals:
+        public: true
         arguments:
             $client: '@http_client'
-    Vtinnovations\Migrator\Security\LicenseManager:
+            $project: '%vtinnovations_migrator.project%'
+        tags:
+            - { name: kernel.event_listener, event: kernel.terminate, method: onTerminate }
+
+    Vtinnovations\Migrator\Transfer\ExchangeResponseReader: ~
+    Vtinnovations\Migrator\Transfer\UpdaterRequestVerifier: ~
+    Vtinnovations\Migrator\Transfer\UpdaterJournal: ~
+    Vtinnovations\Migrator\Controller\EntitlementIntakeController:
         public: true
-    Vtinnovations\Migrator\Security\LicenseGuard: ~
+        tags: ['controller.service_arguments']
+        arguments:
+            $projectSlug: '%vtinnovations_migrator.project_slug%'
+            $productId: '%vtinnovations_migrator.product_id%'
+    Vtinnovations\Migrator\Transfer\ExchangeClient:
+        arguments:
+            $client: '@http_client'
+            $project: '%vtinnovations_migrator.project%'
+            $projectSlug: '%vtinnovations_migrator.project_slug%'
+            $productId: '%vtinnovations_migrator.product_id%'
+
+    # Read-side gate (public: BE module + controllers self-fetch it) and write-side orchestration.
+    Vtinnovations\Migrator\Config\EntitlementEvaluator:
+        public: true
+        arguments:
+            $projectSlug: '%vtinnovations_migrator.project_slug%'
+    Vtinnovations\Migrator\Config\EntitlementExchange:
+        public: true
+        arguments:
+            $projectSlug: '%vtinnovations_migrator.project_slug%'
+
+    # The three licence state transitions, as native DCA callbacks on tl_settings. autoconfigure
+    # turns the #[AsCallback] attributes into contao.callback tags, so Contao resolves this service
+    # (with real constructor injection) when it dispatches the Settings form — no bundle route and
+    # no controller is involved in licence management at all.
+    Vtinnovations\Migrator\EventListener\DataContainer\EntitlementFields: ~
+
+    # EntitlementSummary is NOT a container service: Contao's DCA input_field_callback instantiates
+    # it with `new` (System::importStatic), so it self-fetches collaborators from the container
+    # inside render(). Registering it with arguments here would fail container compilation.
 
     # --- Manifest ----------------------------------------------------------------
     Vtinnovations\Migrator\Manifest\ManifestStore: ~
@@ -74,6 +125,7 @@ services:
         tags: ['controller.service_arguments']
         arguments:
             $csrf: '@contao.csrf.token_manager'
+            $framework: '@contao.framework'
             $csrfTokenName: '%contao.csrf_token_name%'
 
     # BE_MOD callback — Contao instantiates with no args, so the class self-fetches

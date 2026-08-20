@@ -12,7 +12,9 @@ use Vtinnovations\Migrator\Config\Paths;
 use Vtinnovations\Migrator\Job\JobFactory;
 use Vtinnovations\Migrator\Job\JobState;
 use Vtinnovations\Migrator\Job\JobStore;
-use Vtinnovations\Migrator\Security\LicenseManager;
+use Vtinnovations\Migrator\Config\EntitlementEvaluator;
+use Vtinnovations\Migrator\Config\EntitlementState;
+use Vtinnovations\Migrator\EventListener\TelemetrySignals;
 use Vtinnovations\Migrator\Security\TokenManager;
 use Vtinnovations\Migrator\Transfer\ChunkAssembler;
 use Vtinnovations\Migrator\Transfer\PairingStore;
@@ -35,7 +37,11 @@ final class MigratorModule
     private ConfigStore $config;
     private ChunkAssembler $assembler;
     private TokenManager $tokens;
-    private LicenseManager $license;
+    private EntitlementEvaluator $license;
+    private TelemetrySignals $telemetry;
+
+    /** Per-request evaluation of the stored entitlement (immutable; re-derived from crypto). */
+    private ?EntitlementState $entitlement = null;
 
     /** @var array<string, string> UI strings for the active backend language. */
     private array $L = [];
@@ -53,7 +59,8 @@ final class MigratorModule
         $this->config = $container->get(ConfigStore::class);
         $this->assembler = $container->get(ChunkAssembler::class);
         $this->tokens = $container->get(TokenManager::class);
-        $this->license = $container->get(LicenseManager::class);
+        $this->license = $container->get(EntitlementEvaluator::class);
+        $this->telemetry = $container->get(TelemetrySignals::class);
     }
 
     public function generate(): string
@@ -66,15 +73,17 @@ final class MigratorModule
             $notice = $this->handlePost($request);
         }
 
-        // Re-verify against the license server once the cache is older than a day so a revocation
-        // (or expiry) takes effect without the operator manually re-entering the key.
-        if (null !== $request && $this->license->isCacheStale()) {
-            $this->license->refresh($request->getHost());
+        // Invocation signals: per-invocation (project+domain) once per request, and the once-per-
+        // authenticated-session module-entry event (domain+key) when a signed licence exists. Both
+        // are queued here and flushed on kernel.terminate, so neither delays rendering.
+        if (null !== $request) {
+            $this->emitSignals($request);
         }
 
-        // Whole bundle is license-gated: until a valid key is stored, show only the activation
-        // form. handlePost() already processed a save_license POST above (and redirects on success).
-        if (!$this->license->isLicensed()) {
+        // Whole bundle is licence-gated. Activation/refresh/removal lives on the authoritative
+        // Contao → Settings surface (the tl_settings DCA section); until a valid signed licence
+        // exists there, this module shows only a pointer to it — never its own key form.
+        if (!$this->licensed()) {
             return $this->renderLicenseGate($notice);
         }
 
@@ -89,6 +98,45 @@ final class MigratorModule
         $isess = $this->importSession($request?->query->get('isess'));
 
         return $this->render($jobId, $isess, $notice);
+    }
+
+    /**
+     * Server-side licence gate for this module. Evaluated once per request from the authoritative
+     * stored state (the evaluation re-runs the full crypto pipeline), then reused as an immutable
+     * result — the module never caches a bare boolean across requests and never trusts the UI.
+     */
+    private function licensed(): bool
+    {
+        $this->entitlement ??= $this->license->evaluate();
+
+        return $this->entitlement->isLicensed();
+    }
+
+    /**
+     * Queue the per-invocation and once-per-session module-entry telemetry signals. The session
+     * marker (keyed by project) is claimed atomically inside the callback so parallel tabs compete
+     * for a single claim and the key/session token are never persisted or logged.
+     */
+    private function emitSignals(Request $request): void
+    {
+        $authenticated = $this->license->authenticatedKeyAndDomain();
+        $session = $request->hasSession() ? $request->getSession() : null;
+
+        $claim = static function () use ($session): bool {
+            if (null === $session) {
+                return false;
+            }
+
+            if ($session->get('vtmig_sig_migrator')) {
+                return false;
+            }
+
+            $session->set('vtmig_sig_migrator', 1);
+
+            return true;
+        };
+
+        $this->telemetry->onModuleEntry($request->getHost(), $authenticated, $claim);
     }
 
     private function findActiveJobId(): string
@@ -118,21 +166,13 @@ final class MigratorModule
     {
         $action = (string) $request->request->get('tcmig_action', '');
 
-        // Server-side license gate: every action except entering the license is refused until a
-        // valid key is stored. The UI already hides the controls, but this is the authority.
-        if ('save_license' !== $action && !$this->license->isLicensed()) {
+        // Server-side licence gate: every module action is refused until a valid signed licence
+        // exists. Activation itself is not handled here — it lives on the Settings surface.
+        if (!$this->licensed()) {
             return '';
         }
 
         switch ($action) {
-            case 'save_license':
-                if ($this->license->activate((string) $request->request->get('license_key', ''), $request->getHost())) {
-                    $this->redirectToJob(''); // PRG into the now-unlocked dashboard
-                }
-
-                // Surface the server's reason (invalid key, domain mismatch, expired, server down).
-                return $this->box('error', $this->license->lastMessage() ?: $this->t('license_invalid'));
-
             case 'start_export':
                 $job = $this->jobs->createExport([], $this->nullIfEmpty($request->request->get('passphrase')));
                 $this->redirectToJob($job->id);
@@ -402,7 +442,9 @@ JS;
      */
     private function renderLicenseGate(string $notice): string
     {
-        $tf = $this->tokenField($this->csrfToken());
+        // Activation is owned by the Contao → Settings DCA section. This gate only
+        // points the operator there — it never collects a licence key itself.
+        $settingsUrl = 'contao?do=settings';
 
         $html = '<div id="tl_buttons"><a href="contao" class="header_back" title="Back">Back</a></div>';
         $html .= $this->styles();
@@ -413,11 +455,8 @@ JS;
         $html .= '<div class="tcmig-grid"><div class="tcmig-card">'
             .'<div class="tcmig-card-h">'.$this->t('license_h').'</div>'
             .'<div class="tcmig-card-d">'.$this->t('license_d').'</div>'
-            .'<form method="post" data-turbo="false">'.$tf
-            .'<input type="hidden" name="tcmig_action" value="save_license">'
-            .'<div class="tcmig-field"><label>'.$this->t('license_key_label').'</label>'
-            .'<input type="text" name="license_key" class="tcmig-input" value="'.$this->esc($this->license->getLicenseKey()).'" autocomplete="off" spellcheck="false"></div>'
-            .'<button type="submit" class="tcmig-btn">'.$this->t('license_btn').'</button></form></div></div>';
+            .'<a href="'.$this->esc($settingsUrl).'" class="tcmig-btn">'.$this->t('license_btn').'</a>'
+            .'</div></div>';
         $html .= '</div>';
 
         return $html;
@@ -490,254 +529,22 @@ CSS;
     }
 
     /**
-     * Pick the UI string table for the active backend language. Contao sets
-     * $GLOBALS['TL_LANGUAGE'] from the logged-in backend user's preference; anything that is
-     * not German falls back to English.
+     * Load the UI strings for the active backend language. Contao resolves the language file for
+     * $GLOBALS['TL_LANGUAGE'] (the logged-in backend user's preference) and falls back to English
+     * itself, so no string table lives in this class.
      */
     private function initLang(): void
     {
-        $lang = str_starts_with((string) ($GLOBALS['TL_LANGUAGE'] ?? 'en'), 'de') ? 'de' : 'en';
-        $this->L = $this->strings()[$lang];
+        System::loadLanguageFile('tcmig');
+
+        $strings = $GLOBALS['TL_LANG']['tcmig'] ?? [];
+        $this->L = \is_array($strings) ? $strings : [];
     }
 
     private function t(string $key): string
     {
         return $this->L[$key] ?? $key;
     }
-
-    /**
-     * @return array<string, array<string, string>>
-     */
-    private function strings(): array
-    {
-        return [
-            'en' => [
-                'sub' => 'Move a Contao&nbsp;5 site to a new host — download a portable package, import one, or push it directly server&#8209;to&#8209;server.',
-                'tab_export' => 'Export',
-                'tab_import' => 'Import',
-                'tab_s2s' => 'Server&#8209;to&#8209;server',
-                'tab_recovery' => 'Recovery panel',
-                'license_locked' => 'This plugin is free but requires a license. Get your free key at v-t.one and enter it to unlock every feature.',
-                'license_h' => 'License activation',
-                'license_d' => 'The migrator is free, but needs a free license key (registered per domain at v-t.one). Enter your key here — it is verified online.',
-                'license_key_label' => 'License key',
-                'license_btn' => 'Activate license',
-                'license_invalid' => 'That license key is not valid. The plugin stays locked.',
-                'recovery_h' => 'Standalone recovery panel',
-                'recovery_d' => 'A web-root file that drives a migration and runs <code>contao:migrate</code> independently of the backend — use it if the backend breaks after a cross-version restore.',
-                'recovery_link' => 'Open standalone recovery panel&nbsp;&rarr;',
-                'recovery_note' => ' A web-root file that drives a migration and runs <code>contao:migrate</code> independently of the backend — use it if the backend breaks after a cross-version restore.',
-                'recovery_token' => 'Recovery token',
-                'recovery_token_loc' => '(also at <code>var/migrator/auth.token</code>, needed when the backend is down)',
-                'export_h' => 'Export',
-                'export_d' => 'Build a portable <code>.tcmig</code> package of this site and download it.',
-                'export_pass' => 'Export passphrase',
-                'export_pass_hint' => '(optional — encrypts secrets &amp; signs the package)',
-                'export_btn' => 'Start export',
-                'import_h' => 'Import',
-                'import_d' => 'Upload a <code>.tcmig</code> package and restore it onto this site.',
-                'import_file' => 'Package file',
-                'import_file_hint' => '(single .tcmig)',
-                'pass' => 'Passphrase',
-                'pass_hint_signed' => '(if the package was passphrase-signed)',
-                'import_btn' => 'Upload &amp; import',
-                'split_q' => 'Package too large for a single upload? Split the download below into small parts, then select them all here — they upload one after another.',
-                'split_size_label' => 'Max MB per part',
-                'split_prepare_btn' => 'Prepare parts',
-                'split_parts_label' => 'Select all parts at once (.001, .002, …)',
-                'split_upload_btn' => 'Upload &amp; import',
-                'js_no_files' => 'No files selected.',
-                'js_uploading' => 'Uploading part',
-                'js_upload_err' => 'Error on part',
-                'js_upload_fail' => 'Upload failed (network/timeout) — reload and retry.',
-                'js_assembling' => 'Assembling parts & starting import…',
-                'js_assemble_err' => 'Assemble error:',
-                'js_assemble_fail' => 'Assemble failed (network/timeout).',
-                'js_fits_one' => 'Package fits one file — use Download above.',
-                'js_parts' => 'parts of ~',
-                'js_total' => 'total',
-                'js_part' => 'part',
-                'js_dl_all' => 'Download all sequentially',
-                'split_start_btn' => 'Start split import',
-                'split_session' => 'Split import session %s — %d part(s) uploaded. Upload the volumes in order (.001, .002, …); the next expected is part %s.',
-                'next_part' => 'Next part file',
-                'upload_part_btn' => 'Upload part %s',
-                'assemble_btn' => 'Assemble %d part(s) &amp; import',
-                's2s_intro' => '<strong>Direct server-to-server transfer</strong> — no manual download/upload. One install is the <strong>DESTINATION</strong> (the new host, receives), the other the <strong>SOURCE</strong> (the old host, sends). Run the migrator backend on BOTH.'
-                    .'<ol style="margin:10px 0 4px;padding-left:22px;line-height:1.7">'
-                    .'<li><strong>On the DESTINATION</strong> (this backend on the new host) — card &ldquo;Receive&rdquo; below: click &ldquo;Mint pairing token&rdquo;. It is a single-use token, valid only for this one transfer and only for a short time.</li>'
-                    .'<li><strong>Copy</strong> the token and take it to the SOURCE.</li>'
-                    .'<li><strong>On the SOURCE</strong> (the old host&rsquo;s migrator backend) — card &ldquo;Send&rdquo;: paste the destination&rsquo;s base URL and the token, set a passphrase, then &ldquo;Build &amp; push&rdquo;.</li>'
-                    .'<li>The source builds the package and pushes it HMAC-signed straight to the destination, which starts the import automatically.</li>'
-                    .'</ol><strong>Important:</strong> the package must be <strong>passphrase-signed</strong> — you need the SAME passphrase on the destination to verify it, so note it down.',
-                'recv_h' => 'Receive',
-                'recv_mode' => '(Mode B — DESTINATION)',
-                'recv_d' => 'On the NEW host: mint the single-use token here, then hand it to the source.',
-                'mint_btn' => 'Mint pairing token',
-                'send_h' => 'Send',
-                'send_mode' => '(Mode B — SOURCE)',
-                'send_d' => 'On the OLD host: build the package and push it straight to the paired destination.',
-                'dest_url' => 'Destination base URL',
-                'pairing' => 'Pairing token',
-                'send_pass_hint' => '(required so the destination can verify the package)',
-                'push_btn' => 'Build &amp; push',
-                'job' => 'Job',
-                'download_pkg' => 'Download package',
-                'paused_pass_msg' => 'This package is passphrase-signed. Enter the export passphrase to verify and continue.',
-                'paused_pass_btn' => 'Verify &amp; continue',
-                'compat_warn' => 'Compatibility warnings:',
-                'compat_btn' => 'Proceed anyway',
-                'composer_warn' => 'composer.json issues that may break install on the destination — review before sending:',
-                'composer_btn' => 'Proceed anyway',
-                'composer_fix_btn' => 'Fix it for the migration package (ship vendor/ + portable composer.json)',
-                'cw_missing' => 'composer.json not found in the project root — the package cannot be audited before sending.',
-                'cw_invalid_json' => 'composer.json is not valid JSON — fix it before migrating.',
-                'cw_repo_path' => 'Repository "%s" is a local PATH repo (%s) — the destination host will not have this directory, so composer install fails unless the package is published or the same path exists there.',
-                'cw_repo_vcs' => 'Repository "%s" is a %s repo (%s) — the destination needs network access and credentials to reach it during composer install.',
-                'cw_repo_custom' => 'Custom composer repository "%s" (%s) — make sure it is reachable and authenticated on the destination host.',
-                'cw_packagist_disabled' => 'Packagist is disabled in composer.json — every dependency must come from the custom repositories, which have to be reachable on the destination host.',
-                'cw_dev_constraint' => 'Package "%s" is required at a dev constraint ("%s") — dev versions are not reproducible unless their source repo is reachable on the destination.',
-                'cw_min_stability' => 'minimum-stability is "%s" (not stable) — the destination may resolve different, unstable versions than the source.',
-                'cw_path_no_version' => 'Path package "%s" (%s) has no "version" in its composer.json — composer install may refuse it on the destination (path packages should pin a version).',
-                'urlmap_msg' => 'Confirm the host rewrite before the database is rewritten:',
-                'urlmap_old' => 'Old host',
-                'urlmap_new' => 'New host',
-                'urlmap_btn' => 'Apply rewrite',
-                'jobs_h' => 'Jobs',
-                'no_jobs' => 'No jobs yet.',
-                'col_id' => 'ID',
-                'col_type' => 'Type',
-                'col_state' => 'State',
-                'col_progress' => 'Progress',
-                'col_action' => 'Action',
-                'cancel_btn' => 'Cancel',
-                'cancel_confirm' => 'Cancel this job?',
-                'delete_btn' => 'Delete',
-                'delete_confirm' => 'Delete this job and its package/backup? This cannot be undone.',
-                'dl' => 'download',
-                'split_parts' => 'split parts',
-                'mint_text' => 'Pairing token (valid until %s UTC) — paste this into the SOURCE install. It is shown only once:',
-                'err_no_package' => 'No valid package uploaded.',
-                'err_invalid_isess' => 'Invalid import session.',
-                'err_no_part' => 'No valid part uploaded.',
-                'err_no_parts' => 'No parts uploaded yet.',
-                'err_unknown_job' => 'Unknown job %s.',
-            ],
-            'de' => [
-                'sub' => 'Eine Contao&nbsp;5-Website auf einen neuen Host umziehen — als portables Paket herunterladen, ein Paket importieren oder direkt von Server zu Server übertragen.',
-                'tab_export' => 'Export',
-                'tab_import' => 'Import',
-                'tab_s2s' => 'Server&#8209;zu&#8209;Server',
-                'tab_recovery' => 'Wiederherstellung',
-                'license_locked' => 'Dieses Plugin ist kostenlos, benötigt aber eine Lizenz. Hol dir deinen kostenlosen Schlüssel auf v-t.one und gib ihn ein, um alle Funktionen freizuschalten.',
-                'license_h' => 'Lizenz aktivieren',
-                'license_d' => 'Der Migrator ist kostenlos, braucht aber einen kostenlosen Lizenzschlüssel (pro Domain auf v-t.one registriert). Gib deinen Schlüssel hier ein — er wird online verifiziert.',
-                'license_key_label' => 'Lizenzschlüssel',
-                'license_btn' => 'Lizenz aktivieren',
-                'license_invalid' => 'Dieser Lizenzschlüssel ist ungültig. Das Plugin bleibt gesperrt.',
-                'recovery_h' => 'Eigenständiges Wiederherstellungs-Panel',
-                'recovery_d' => 'Eine Datei im Web-Root, die eine Migration steuert und <code>contao:migrate</code> unabhängig vom Backend ausführt — nutze sie, falls das Backend nach einer versionsübergreifenden Wiederherstellung nicht mehr lädt.',
-                'recovery_link' => 'Eigenständiges Wiederherstellungs-Panel öffnen&nbsp;&rarr;',
-                'recovery_note' => ' Eine Datei im Web-Root, die eine Migration steuert und <code>contao:migrate</code> unabhängig vom Backend ausführt — nutze sie, falls das Backend nach einer versionsübergreifenden Wiederherstellung nicht mehr lädt.',
-                'recovery_token' => 'Wiederherstellungs-Token',
-                'recovery_token_loc' => '(auch in <code>var/migrator/auth.token</code>, nötig wenn das Backend nicht erreichbar ist)',
-                'export_h' => 'Export',
-                'export_d' => 'Ein portables <code>.tcmig</code>-Paket dieser Website erstellen und herunterladen.',
-                'export_pass' => 'Export-Passphrase',
-                'export_pass_hint' => '(optional — verschlüsselt Geheimnisse &amp; signiert das Paket)',
-                'export_btn' => 'Export starten',
-                'import_h' => 'Import',
-                'import_d' => 'Ein <code>.tcmig</code>-Paket hochladen und auf dieser Website wiederherstellen.',
-                'import_file' => 'Paketdatei',
-                'import_file_hint' => '(einzelne .tcmig)',
-                'pass' => 'Passphrase',
-                'pass_hint_signed' => '(falls das Paket mit einer Passphrase signiert wurde)',
-                'import_btn' => 'Hochladen &amp; importieren',
-                'split_q' => 'Paket zu groß für einen einzelnen Upload? Teile den Download unten in kleine Teile, wähle sie dann hier alle aus — sie werden nacheinander hochgeladen.',
-                'split_size_label' => 'Max. MB pro Teil',
-                'split_prepare_btn' => 'Teile vorbereiten',
-                'split_parts_label' => 'Alle Teile auf einmal wählen (.001, .002, …)',
-                'split_upload_btn' => 'Hochladen &amp; importieren',
-                'js_no_files' => 'Keine Dateien gewählt.',
-                'js_uploading' => 'Lade Teil',
-                'js_upload_err' => 'Fehler bei Teil',
-                'js_upload_fail' => 'Upload fehlgeschlagen (Netzwerk/Timeout) — neu laden und erneut versuchen.',
-                'js_assembling' => 'Füge Teile zusammen & starte Import…',
-                'js_assemble_err' => 'Assemble-Fehler:',
-                'js_assemble_fail' => 'Assemble fehlgeschlagen (Netzwerk/Timeout).',
-                'js_fits_one' => 'Paket passt in eine Datei — nutze Download oben.',
-                'js_parts' => 'Teile à ~',
-                'js_total' => 'gesamt',
-                'js_part' => 'Teil',
-                'js_dl_all' => 'Alle nacheinander laden',
-                'split_start_btn' => 'Geteilten Import starten',
-                'split_session' => 'Geteilte Import-Sitzung %s — %d Teil(e) hochgeladen. Lade die Teile der Reihe nach hoch (.001, .002, …); als Nächstes wird Teil %s erwartet.',
-                'next_part' => 'Nächste Teildatei',
-                'upload_part_btn' => 'Teil %s hochladen',
-                'assemble_btn' => '%d Teil(e) zusammenfügen &amp; importieren',
-                's2s_intro' => '<strong>Direkte Übertragung von Server zu Server</strong> — kein manuelles Herunterladen/Hochladen. Eine Installation ist das <strong>ZIEL</strong> (neuer Host, empfängt), die andere die <strong>QUELLE</strong> (alter Host, sendet). Der Migrator läuft auf BEIDEN.'
-                    .'<ol style="margin:10px 0 4px;padding-left:22px;line-height:1.7">'
-                    .'<li><strong>Am ZIEL</strong> (dieses Backend auf dem neuen Host) — Karte „Empfangen" unten: „Kopplungstoken erzeugen" klicken. Ein Einmal-Token, gültig nur für diese eine Übertragung und nur kurze Zeit.</li>'
-                    .'<li>Token <strong>kopieren</strong> und zur QUELLE bringen.</li>'
-                    .'<li><strong>An der QUELLE</strong> (Migrator-Backend des alten Hosts) — Karte „Senden": Basis-URL des Ziels und Token einfügen, eine Passphrase setzen, dann „Erstellen &amp; senden".</li>'
-                    .'<li>Die Quelle baut das Paket und pusht es HMAC-signiert direkt ans Ziel, das den Import automatisch startet.</li>'
-                    .'</ol><strong>Wichtig:</strong> Das Paket muss <strong>passphrase-signiert</strong> sein — dieselbe Passphrase brauchst du am Ziel zum Verifizieren. Notiere sie dir.',
-                'recv_h' => 'Empfangen',
-                'recv_mode' => '(Modus B — ZIEL)',
-                'recv_d' => 'Auf dem NEUEN Host: hier den Einmal-Token erzeugen und der Quelle geben.',
-                'mint_btn' => 'Kopplungstoken erzeugen',
-                'send_h' => 'Senden',
-                'send_mode' => '(Modus B — QUELLE)',
-                'send_d' => 'Auf dem ALTEN Host: Paket bauen und direkt an das gekoppelte Ziel senden.',
-                'dest_url' => 'Basis-URL des Ziels',
-                'pairing' => 'Kopplungstoken',
-                'send_pass_hint' => '(erforderlich, damit das Ziel das Paket verifizieren kann)',
-                'push_btn' => 'Erstellen &amp; senden',
-                'job' => 'Auftrag',
-                'download_pkg' => 'Paket herunterladen',
-                'paused_pass_msg' => 'Dieses Paket ist mit einer Passphrase signiert. Gib die Export-Passphrase ein, um es zu verifizieren und fortzufahren.',
-                'paused_pass_btn' => 'Verifizieren &amp; fortfahren',
-                'compat_warn' => 'Kompatibilitätswarnungen:',
-                'compat_btn' => 'Trotzdem fortfahren',
-                'composer_warn' => 'composer.json-Probleme, die die Installation am Ziel stören könnten — vor dem Versand prüfen:',
-                'composer_btn' => 'Trotzdem fortfahren',
-                'composer_fix_btn' => 'Fürs Migrations-Paket beheben (vendor/ mitschicken + portable composer.json)',
-                'cw_missing' => 'composer.json im Projekt-Root nicht gefunden — das Paket kann vor dem Versand nicht geprüft werden.',
-                'cw_invalid_json' => 'composer.json ist kein gültiges JSON — vor der Migration korrigieren.',
-                'cw_repo_path' => 'Repository „%s" ist ein lokales PATH-Repo (%s) — der Ziel-Host hat dieses Verzeichnis nicht, daher schlägt composer install fehl, sofern das Paket nicht veröffentlicht ist oder derselbe Pfad dort existiert.',
-                'cw_repo_vcs' => 'Repository „%s" ist ein %s-Repo (%s) — das Ziel braucht Netzwerkzugang und Zugangsdaten, um es beim composer install zu erreichen.',
-                'cw_repo_custom' => 'Eigenes composer-Repository „%s" (%s) — stelle sicher, dass es am Ziel-Host erreichbar und authentifiziert ist.',
-                'cw_packagist_disabled' => 'Packagist ist in der composer.json deaktiviert — alle Abhängigkeiten müssen aus den eigenen Repositories kommen, die am Ziel-Host erreichbar sein müssen.',
-                'cw_dev_constraint' => 'Paket „%s" ist mit einer dev-Version gefordert („%s") — dev-Versionen sind nicht reproduzierbar, sofern das Quell-Repo am Ziel nicht erreichbar ist.',
-                'cw_min_stability' => 'minimum-stability ist „%s" (nicht stable) — das Ziel könnte andere, instabile Versionen auflösen als die Quelle.',
-                'cw_path_no_version' => 'Path-Paket „%s" (%s) hat keine „version" in seiner composer.json — composer install könnte es am Ziel ablehnen (Path-Pakete sollten eine Version pinnen).',
-                'urlmap_msg' => 'Bestätige die Host-Umschreibung, bevor die Datenbank umgeschrieben wird:',
-                'urlmap_old' => 'Alter Host',
-                'urlmap_new' => 'Neuer Host',
-                'urlmap_btn' => 'Umschreibung anwenden',
-                'jobs_h' => 'Aufträge',
-                'no_jobs' => 'Noch keine Aufträge.',
-                'col_id' => 'ID',
-                'col_type' => 'Typ',
-                'col_state' => 'Status',
-                'col_progress' => 'Fortschritt',
-                'col_action' => 'Aktion',
-                'cancel_btn' => 'Abbrechen',
-                'cancel_confirm' => 'Diesen Auftrag abbrechen?',
-                'delete_btn' => 'Löschen',
-                'delete_confirm' => 'Diesen Auftrag samt Paket/Backup löschen? Kann nicht rückgängig gemacht werden.',
-                'dl' => 'herunterladen',
-                'split_parts' => 'Teile',
-                'mint_text' => 'Kopplungstoken (gültig bis %s UTC) — füge ihn in der QUELL-Installation ein. Er wird nur einmal angezeigt:',
-                'err_no_package' => 'Kein gültiges Paket hochgeladen.',
-                'err_invalid_isess' => 'Ungültige Import-Sitzung.',
-                'err_no_part' => 'Kein gültiger Teil hochgeladen.',
-                'err_no_parts' => 'Noch keine Teile hochgeladen.',
-                'err_unknown_job' => 'Unbekannter Auftrag %s.',
-            ],
-        ];
-    }
-
     private function monitor(string $jobId): string
     {
         $job = $this->store->load($jobId);
