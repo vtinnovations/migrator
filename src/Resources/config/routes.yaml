@@ -1,3 +1,10 @@
+# Contao Migrator
+#
+# Package: vtinnovations/migrator
+# Copyright: V&T Innovations Team
+# Licence: LGPL-3.0-or-later
+# Website: https://www.v-t.one
+
 # V&T Innovations Contao Migrator routes.
 #
 # NOTE: a YAML routing file must never carry a top-level key with an empty value — Symfony

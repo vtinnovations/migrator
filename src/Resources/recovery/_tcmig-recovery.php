@@ -1,6 +1,15 @@
 <?php
 
 /*
+ * Contao Migrator
+ *
+ * Package: vtinnovations/migrator
+ * Copyright: V&T Innovations Team
+ * Licence: LGPL-3.0-or-later
+ * Website: https://www.v-t.one
+ */
+
+/*
  * V&T Innovations Contao Migrator — standalone recovery panel.
  *
  * This file is auto-copied into the project's public/ directory by the bundle on every kernel
