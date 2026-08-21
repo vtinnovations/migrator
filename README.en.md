@@ -150,10 +150,10 @@ See Section 14.
 | Backend module & AJAX routes (`/contao/migrator/...`) | Contao backend firewall (`_scope: backend`) + CSRF token (`REQUEST_TOKEN`) |
 | Licence management (Contao → Settings) | regular Contao Settings-page permission; own form field with no extra route |
 | Mode B receive (`/migrator/ingest/...`) | publicly reachable, but authenticated solely by a signed, single-use pairing — no backend login possible or needed |
-| Licence-update endpoint (`/rest/api/v1/migrator-license-updater`) | publicly reachable, authenticated solely by a signed request (server-to-server, initiated by V-T.ONE) |
-| Recovery panel (`/_tcmig-recovery.php`) | operator token, compared in constant time; reachable independently of the Contao backend |
+| Licence-update endpoint (server-to-server) | publicly reachable, authenticated solely by a cryptographically signed request; initiated by V-T.ONE, no backend login involved |
+| Recovery panel (`/_tcmig-recovery.php`) | operator token; reachable independently of the Contao backend |
 
-Every protected operation re-verifies the valid, cryptographically authenticated licence state **at its own boundary** — not only once at the outer entry point.
+Every protected operation re-verifies the valid entitlement state **at its own boundary** — not only once at the outer entry point — and checks exactly the tier that operation requires. Job processing re-checks before it carries a job forward: a Pro-tier job stops as soon as the entitlement lapses, whichever entry point started it. Hiding a control is never treated as access protection anywhere in the product.
 
 ## 14. Licensing and Entitlement Behaviour
 
@@ -181,11 +181,26 @@ Also shown: the masked key, package, "Valid from", "Valid until" (or "unlimited"
 
 **Binding:** a licence is bound to an exact hostname configured on the Contao root pages (no `www.` matching, no subdomain equivalence). Without a matching configured domain, activation cannot succeed — the hint on the Settings page lists the configured hosts.
 
-**Checks:** ordinary entitlement checks run locally (signature, validity period, domain binding). Activation and refresh contact a single, fixed-in-code HTTPS service. In addition, V-T.ONE may deliver a licence update to the installation server-side (signed, without a backend login, authenticated solely by a request signature).
+**Checks:** ordinary entitlement checks run entirely locally and without network access. Activation and refresh contact a single, fixed-in-code HTTPS service. In addition, V-T.ONE may deliver a licence update to the installation server-side (signed, without a backend login, authenticated solely by a request signature).
 
 **Storage:** the licence state is kept outside the public web root, under `var/migrator/`.
 
-**Feature scope per package:** in the current implementation, every valid licence (Trial, Free or Pro) unlocks the same complete feature set — the difference between packages is duration and terms, not a server-enforced feature boundary.
+### Feature tiers
+
+The feature set is divided into two tiers. Both are enforced server-side.
+
+| Feature area | Free | Pro |
+|---|:--:|:--:|
+| Export, import and recovery | Included | Included |
+| Direct server-to-server transfer | Not included | Included |
+
+- **Export, import and recovery form the Free feature set.** Any valid licence opens the backend module, both manual transfer directions, and every action of the recovery panel.
+- **Direct server-to-server transfer is the paid feature.** An active trial licence includes it, because a trial period exists precisely to evaluate that feature; it lapses when the trial does. It is not part of the Free fallback of an expired Pro licence.
+- **Both installations need the entitlement.** A direct transfer requires it on the sending *and* the receiving installation. One licence can cover both hosts when both hostnames belong to its licensed domain scope. An installation on the Free feature set cannot act as the destination for another installation's direct transfer.
+- **Existing data stays reachable.** Progress display, downloading a package that already exists, and cancelling or deleting a job all remain in the Free feature set. A lapsed Pro licence therefore never leaves a job the operator can no longer clean up.
+- **The feature set can be extended without changing package.** V-T.ONE can enable direct transfer for an existing licence without altering its package. Such an extension only ever adds; it can never remove anything the package itself already grants.
+
+The licence section in Settings shows which feature areas the installed licence includes, so "why is server-to-server transfer locked?" is answered directly on the page.
 
 ## 15. Feature Status Table
 
@@ -193,18 +208,19 @@ Also shown: the masked key, package, "Valid from", "Valid until" (or "unlimited"
 |---|---|
 | Export as a `.tcmig` package | Available |
 | Import via upload (single file or split) | Available |
-| Server-to-server transfer (Mode B) | Available |
+| Server-to-server transfer (Mode B) | Pro only |
 | Serialize-safe host rewriting | Available |
 | Secret carry-over (APP_SECRET etc., passphrase-encrypted) | Available |
 | Pre-send `composer.json` audit | Available |
 | Compatibility check (PHP/Contao version) | Available |
 | Unattended progress via cron | Available |
-| Standalone recovery panel | Available |
+| Standalone recovery panel | Free and Pro |
 | Licence management (activate/update/remove) | Available |
+| Minting a Mode B pairing token | Pro only |
+| Feature differentiation by licence package (Free vs. Pro) | Available |
 | Frontend module / content element | Not applicable |
-| Feature differentiation by licence package (Free vs. Pro) | Not applicable (current implementation) |
 
-*Every feature marked "Available" requires an activated, valid licence (see Section 14).*
+*Every feature in this table requires an activated, valid licence — including those marked "Free and Pro" (see Section 14). "Pro only" marks features that additionally require the Pro feature set.*
 
 ## 16. Security Model
 
@@ -215,11 +231,11 @@ Also shown: the masked key, package, "Valid from", "Valid until" (or "unlimited"
 - **Private storage:** operational data (jobs, backups, licence state, operator token) is kept outside the public web root.
 - **Safe failure behaviour:** a missing or invalid licence, a failed checksum, or an invalid signature blocks the operation instead of proceeding silently; an already-running job is not deleted in this case but resumes automatically once the licence becomes valid again.
 - **Secret handling:** the export passphrase lives only in a transient, permission-restricted (0600) sidecar file — never inside the job record itself — and is deleted once no longer needed; carried application secrets travel encrypted inside the package.
-- **Redacted logging:** the project's own automated test suite enforces that licence keys, signatures, nonces and raw request/response payloads never reach logs, debug output, or the browser.
+- **Redacted logging:** the project's own automated test suite enforces that licence keys and confidential licence-communication content never reach logs, debug output, or the browser.
 
 ## 17. Operational Security
 
-The standalone recovery panel (`_tcmig-recovery.php`) is automatically mirrored (idempotently, via an MD5 comparison) into the web root on every kernel boot and works **independently of the Contao backend** — for example when a cross-version restore has not yet created a table the backend itself needs. It authenticates via the operator token (compared in constant time) and offers: status display, driving the active job, running `contao:migrate` (including re-publishing assets), minting a pairing token, supplying a passphrase, confirming composer warnings, and cancelling the job. Every mutating action checks the same authoritative licence state as the backend module; status stays readable even without a valid licence, but the driving actions stay disabled.
+The standalone recovery panel (`_tcmig-recovery.php`) is automatically and idempotently mirrored into the web root on every kernel boot and works **independently of the Contao backend** — for example when a cross-version restore has not yet created a table the backend itself needs. It authenticates via the operator token and offers: status display, driving the active job, running `contao:migrate` (including re-publishing assets), minting a pairing token, supplying a passphrase, confirming composer warnings, and cancelling the job. Every mutating action checks the same authoritative entitlement state as the backend module, and checks exactly the tier it requires: the recovery actions belong to the Free feature set, while minting a pairing token requires the Pro feature set. Status stays readable even without a valid licence so a fault remains diagnosable; the driving actions stay disabled.
 
 Because the token can be passed as a URL parameter and may therefore land in access logs, the panel is explicitly intended as a break-glass tool — rotate the token afterwards if that matters.
 
@@ -227,7 +243,7 @@ Because the token can be passed as a URL parameter and may therefore land in acc
 
 | Path | Contents |
 |---|---|
-| `var/migrator/` (configurable via `scratch_dir`) | jobs, backups, staging area, snapshots, incoming Mode B transfers, licence state, operator token, pairing tokens, the licence-update endpoint's replay journal, bundle configuration |
+| `var/migrator/` (configurable via `scratch_dir`) | jobs, backups, staging area, snapshots, incoming Mode B transfers, bundle configuration, and the private entitlement and operational state |
 | `public/_tcmig-recovery.php` (or `web/...`) | automatically mirrored, standalone recovery panel |
 
 ## 19. External Communication
@@ -237,10 +253,12 @@ All outbound connections run exclusively over HTTPS to **a single, fixed-in-code
 | Purpose | Trigger |
 |---|---|
 | Licence activation / refresh | operator clicks "Activate" or "Update" on the Settings page |
-| Invocation signal (project + domain, at most once per request) | opening the backend module |
-| Session signal (domain + key, at most once per authenticated session) | opening the backend module with a valid licence |
+| Invocation signal — transmits the project name and hostname, at most once per request | opening the backend module |
+| Session signal — transmits the hostname and licence key to attribute the licence, at most once per authenticated backend session | opening the backend module with a valid licence |
 
-In addition, V-T.ONE may send a signed licence update **to** the installation server-side (inbound, via the licence-update endpoint).
+In addition, V-T.ONE may send a signed licence update **to** the installation server-side (inbound, server-to-server).
+
+Both signals are sent server-side only; the licence key never appears in the browser view, in logs, or in client-side code.
 
 During a server-to-server transfer (Mode B), the source installation communicates exclusively with the operator's own destination installation — no third-party service is involved.
 
@@ -248,7 +266,7 @@ Delivery of the invocation signals is best-effort: a failure is silently discard
 
 ## 20. Logging and Redaction of Sensitive Data
 
-Classes that handle licence packets, signatures, or request/response payloads deliberately receive **no** logger in the dependency-injection configuration — there is technically no place sensitive data could be logged through. Job logs (visible in the backend monitor) contain only progress and error messages about the migration itself, never licence keys, signatures, or raw network payloads.
+Licence-communication handling is deliberately built without logging: there is no place through which confidential licence data could reach a log. Job logs (visible in the backend monitor) contain only progress and error messages about the migration itself, never licence keys or confidential licence-communication content. The automated test suite verifies this guarantee on every run.
 
 ## 21. Deployment
 
@@ -299,7 +317,8 @@ php tools/verify-licence-surface.php /path/to/project    # runtime acceptance te
 - The database dump/restore logic targets MySQL/MariaDB; other database platforms are not the target scenario for production use.
 - `contao:migrate` is deliberately not run automatically after an import — a pure host move is meant to keep the exact source versions, not upgrade at the same time; the operator runs this step themselves when a later Contao upgrade is due.
 - Composer repositories of type local path or VCS, and `dev` version constraints, can prevent `composer install` from succeeding on the destination; the pre-send audit warns but does not decide automatically.
-- The current implementation does not differentiate the feature set by licence package (Trial/Free/Pro all unlock the same scope); every use still requires an activated licence.
+- Direct server-to-server transfer requires the capability on both the sending and the receiving installation; a Pro source cannot push into a Free destination.
+- The feature set follows from the signed licence. If V-T.ONE later redefines what a package includes, an already-activated licence keeps its existing feature set until the operator runs "Update licence" or V-T.ONE delivers an update.
 
 ## 26. Licence and Copyright Information
 

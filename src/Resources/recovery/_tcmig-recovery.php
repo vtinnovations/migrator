@@ -262,7 +262,18 @@ if ('status' === $action) {
 // crypto, key material or state parsing is duplicated in this standalone file — and it fails
 // CLOSED: if the kernel cannot boot, the panel stays read-only rather than unlocking itself.
 // Resolved after the status action above, so diagnosing a broken install never needs a kernel.
-$licensed = (static function () use ($bootKernel, $root): bool {
+/**
+ * Capabilities the authoritative evaluator grants this installation right now.
+ *
+ * The panel asks for a NAMED capability rather than a yes/no licence answer, because the recovery
+ * actions and minting a pairing sit on different tiers: driving, migrating and cancelling are the
+ * Free feature set, while minting the pairing a remote source authenticates with is direct
+ * server-to-server work. A kernel that cannot boot, or an unreadable state, yields an empty set —
+ * fail closed, exactly as an absent licence does.
+ *
+ * @var list<string>
+ */
+$capabilities = (static function () use ($bootKernel, $root): array {
     try {
         $kernel = $bootKernel($root);
         $kernel->boot();
@@ -270,15 +281,32 @@ $licensed = (static function () use ($bootKernel, $root): bool {
         return $kernel->getContainer()
             ->get(\Vtinnovations\Migrator\Config\EntitlementEvaluator::class)
             ->evaluate()
-            ->isLicensed()
+            ->capabilities
         ;
     } catch (\Throwable) {
-        return false;
+        return [];
     }
 })();
 
-// Mutating actions require a valid license (status stays readable so the operator can diagnose).
-if (\in_array($action, ['tick', 'migrate', 'mint', 'passphrase', 'confirm_composer', 'confirm_composer_fix', 'cancel'], true) && !$licensed) {
+$allows = static fn (string $capability): bool => \in_array($capability, $capabilities, true);
+
+$capArchive = \Vtinnovations\Migrator\Config\EntitlementState::CAP_ARCHIVE;
+$capDirect = \Vtinnovations\Migrator\Config\EntitlementState::CAP_DIRECT;
+
+// Mutating actions require the capability their own work needs; status stays readable on any tier
+// so the operator can always diagnose. `tick` only needs the base tier here because JobRunner
+// re-checks the capability of the specific job it is about to advance — a Mode B job still stops.
+$actionNeeds = [
+    'tick' => $capArchive,
+    'migrate' => $capArchive,
+    'passphrase' => $capArchive,
+    'confirm_composer' => $capArchive,
+    'confirm_composer_fix' => $capArchive,
+    'cancel' => $capArchive,
+    'mint' => $capDirect,
+];
+
+if (isset($actionNeeds[$action]) && !$allows($actionNeeds[$action])) {
     http_response_code(403);
     $json(['ok' => false, 'error' => 'license', 'reason' => 'license']);
 }
@@ -475,14 +503,15 @@ pre{background:rgba(0,0,0,.35);border:1px solid rgba(127,127,127,.3);border-radi
 #compwarn{background:rgba(226,160,60,.12);border:1px solid rgba(226,160,60,.55);border-radius:6px;padding:12px;margin-bottom:16px;color:#e0b45c}
 #compwarn ul{margin:8px 0;padding-left:20px}#compwarn button{background:#c07a2b;margin-top:6px}</style></head><body>
 <h1><?= $esc($t('rec_panel_h')) ?></h1>
-<?php if (!$licensed) { ?><div class="lic"><?= $esc($t('rec_locked')) ?></div><?php } ?>
+<?php if (!$allows($capArchive)) { ?><div class="lic"><?= $esc($t('rec_locked')) ?></div>
+<?php } elseif (!$allows($capDirect)) { ?><div class="lic"><?= $esc($t('rec_tier')) ?></div><?php } ?>
 <div id="st"><?= $esc($t('rec_loading')) ?></div>
 <div id="barwrap"><div id="bar"></div></div>
 <div class="btns">
-  <button id="b-drive" class="drive"<?= $licensed ? '' : ' disabled' ?>><?= $esc($t('rec_drive')) ?></button>
-  <button id="b-mig" class="mig"<?= $licensed ? '' : ' disabled' ?>><?= $esc($t('rec_migrate')) ?></button>
-  <button id="b-mint" class="mint"<?= $licensed ? '' : ' disabled' ?>><?= $esc($t('rec_mint')) ?></button>
-  <button id="b-cancel" class="cxl"<?= $licensed ? '' : ' disabled' ?> style="display:none"><?= $esc($t('rec_cancel')) ?></button>
+  <button id="b-drive" class="drive"<?= $allows($capArchive) ? '' : ' disabled' ?>><?= $esc($t('rec_drive')) ?></button>
+  <button id="b-mig" class="mig"<?= $allows($capArchive) ? '' : ' disabled' ?>><?= $esc($t('rec_migrate')) ?></button>
+  <button id="b-mint" class="mint"<?= $allows($capDirect) ? '' : ' disabled' ?>><?= $esc($t('rec_mint')) ?></button>
+  <button id="b-cancel" class="cxl"<?= $allows($capArchive) ? '' : ' disabled' ?> style="display:none"><?= $esc($t('rec_cancel')) ?></button>
 </div>
 <div id="mintbox"></div>
 <div id="passbox" style="display:none"><strong><?= $esc($t('rec_pass_signed')) ?></strong> <?= $esc($t('rec_pass_prompt')) ?>

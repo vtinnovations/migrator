@@ -76,6 +76,7 @@ final class EntitlementSummary
         $html .= '<h3>' . $this->esc($GLOBALS['TL_LANG']['tl_settings']['tcmig_license_status'][0] ?? 'Migrator') . '</h3>';
         $html .= '<div style="padding:12px 15px;border:1px solid var(--content-border);border-radius:4px;background:var(--content-bg)">';
         $html .= $this->statusLine($state);
+        $html .= $this->capabilityLine($state);
         $html .= $this->hostHint($container, $state);
         $html .= $this->controls();
         $html .= '</div></div>';
@@ -134,6 +135,36 @@ final class EntitlementSummary
         ];
 
         return $this->esc(implode(' · ', $parts));
+    }
+
+    /**
+     * What this licence actually includes, ticked or dashed per capability.
+     *
+     * The status line alone cannot answer the question a Free-tier operator will ask first — why
+     * is Server-to-server locked? — because "Free licence active" reads like nothing is wrong.
+     * Rendered only while something is granted: an unlicensed instance is already being told what
+     * to do, and a list of dashes would just repeat it.
+     */
+    private function capabilityLine(EntitlementState $state): string
+    {
+        if (!$state->isLicensed()) {
+            return '';
+        }
+
+        $parts = [];
+
+        foreach ([
+            EntitlementState::CAP_ARCHIVE => $this->t('cap_archive'),
+            EntitlementState::CAP_DIRECT => $this->t('cap_direct'),
+        ] as $capability => $label) {
+            $parts[] = ($state->allows($capability) ? '✓ ' : '– ').$label;
+        }
+
+        return sprintf(
+            '<div class="tl_gray" style="font-size:12px;margin-top:3px">%s: %s</div>',
+            $this->esc($this->t('panel_capabilities')),
+            $this->esc(implode(' · ', $parts)),
+        );
     }
 
     private function moment(?int $timestamp): string

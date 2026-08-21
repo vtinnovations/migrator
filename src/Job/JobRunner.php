@@ -44,13 +44,21 @@ final class JobRunner
     public function tick(string $jobId): ?JobState
     {
         // Independent gate at the protected operation itself, not only at the request boundary:
-        // migration work never advances without a valid signed licence, whichever entry point
-        // (backend poll, cron, recovery panel) asked for the tick. The job is left untouched and
-        // resumes unchanged once a licence is active again — nothing is deleted or failed.
-        if (!$this->entitlement->evaluate()->isLicensed()) {
-            $this->logger->warning('Migrator job {id} was not advanced: no valid licence.', ['id' => $jobId]);
+        // migration work never advances without the capability THIS job's own work requires,
+        // whichever entry point (backend poll, cron, recovery panel) asked for the tick. So a
+        // Mode B push stops the moment direct transfer lapses, while a manual export keeps
+        // running on the Free tier. The job is left untouched and resumes unchanged once the
+        // capability is granted again — nothing is deleted or failed.
+        //
+        // Loaded here rather than inside the lock because the classification is what decides
+        // whether we may take the lock at all. A missing job still falls through to the locked
+        // section, so its not-found error surfaces exactly where it always did.
+        $job = $this->store->load($jobId);
 
-            return $this->store->load($jobId)?->state;
+        if (null !== $job && !$this->entitlement->evaluate()->allows($job->requiredCapability())) {
+            $this->logger->warning('Migrator job {id} was not advanced: entitlement missing.', ['id' => $jobId]);
+
+            return $job->state;
         }
 
         $result = $this->store->withLock($jobId, function () use ($jobId): JobState {

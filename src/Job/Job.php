@@ -13,6 +13,8 @@ declare(strict_types=1);
 
 namespace Vtinnovations\Migrator\Job;
 
+use Vtinnovations\Migrator\Config\EntitlementState;
+
 /**
  * A migration job: an ordered list of named steps advanced by JobRunner.
  *
@@ -52,6 +54,24 @@ final class Job implements \JsonSerializable
     ) {
         $this->createdAt = microtime(true);
         $this->updatedAt = $this->createdAt;
+    }
+
+    /**
+     * The capability this job's own work requires.
+     *
+     * Mode B is the direct server-to-server path: an outbound push (an Export job flagged mode B)
+     * and the import a receive endpoint enqueues for a landed payload. Everything else is manual
+     * package work. The classification is derived from the job's own recorded metadata, so a
+     * dashboard poll, a cron tick and the recovery panel all judge the same job identically — and
+     * a job cannot change tier after it was created.
+     */
+    public function requiredCapability(): string
+    {
+        if (JobType::Receive === $this->type || 'B' === ($this->meta['mode'] ?? null)) {
+            return EntitlementState::CAP_DIRECT;
+        }
+
+        return EntitlementState::CAP_ARCHIVE;
     }
 
     public function currentStep(): ?string

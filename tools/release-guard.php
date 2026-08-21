@@ -112,7 +112,11 @@ $require(
 );
 $require(
     'the recovery panel does not consult the authoritative evaluator',
-    null !== $recovery && str_contains($recovery, 'isLicensed()'),
+    null !== $recovery && str_contains($recovery, '->capabilities'),
+);
+$require(
+    'the recovery panel does not gate the pairing mint on the paid capability',
+    null !== $recovery && str_contains($recovery, "'mint' => \$capDirect,"),
 );
 
 // Both documented signals must still be emitted, as two distinct shapes.
@@ -130,8 +134,76 @@ $boundaries = [
 
 foreach ($boundaries as $relative) {
     $code = $read($relative);
-    $require(sprintf('%s no longer enforces entitlement', $relative), null !== $code && str_contains($code, 'isLicensed()'));
+    $require(sprintf('%s no longer enforces entitlement', $relative), null !== $code && str_contains($code, 'allows('));
+
+    // A boundary that asks "am I licensed?" cannot tell the Free tier from the paid one, so it
+    // would wave a Mode B request through on a Free licence. Gates must name a capability.
+    $require(
+        sprintf('%s gates on isLicensed() instead of a named capability', $relative),
+        null !== $code && !preg_match('/!\s*\$[A-Za-z_>()\->\s]*isLicensed\(\)/', $code),
+    );
 }
+
+// --- 4c. the paid boundary is actually paid ----------------------------------------------------
+// Free = export/import/recovery; Pro = direct server-to-server. Guard both halves of that split,
+// because a single wrong grant here silently gives the paid feature away to every Free licence.
+$policy = $read('src/Config/EntitlementModelPolicy.php');
+$state = $read('src/Config/EntitlementState.php');
+
+$require('the entitlement policy is missing', null !== $policy);
+$require('the entitlement state is missing', null !== $state);
+
+$require(
+    'the capability vocabulary changed',
+    null !== $state
+        && str_contains($state, "CAP_ARCHIVE = 'transfer.archive'")
+        && str_contains($state, "CAP_DIRECT = 'transfer.direct'"),
+);
+
+// allows() must decide by membership. A bare `return true` would unlock every gate at once.
+$require(
+    'allows() does not decide by capability membership',
+    null !== $state && str_contains($state, 'return \in_array($capability, $this->capabilities, true);'),
+);
+
+// No boolean field: "licensed" is derived from the grant set, so there is nothing to flip.
+$require(
+    'the state carries a mutable licensed flag again',
+    null !== $state && !preg_match('/readonly bool \$licensed/', $state),
+);
+
+$require(
+    'the free package grants direct transfer',
+    null !== $policy && str_contains($policy, 'self::PKG_FREE => [EntitlementState::CAP_ARCHIVE],'),
+);
+
+$require(
+    'the expired-Pro Free fallback grants direct transfer',
+    null !== $policy && str_contains($policy, 'private const FREE_FALLBACK_GRANTS = [EntitlementState::CAP_ARCHIVE];'),
+);
+
+// Every server-side entry point to a direct transfer must name the paid capability itself.
+$directBoundaries = [
+    'src/Controller/IngestController.php',
+    'src/BackendModule/MigratorModule.php',
+    'src/Resources/recovery/_tcmig-recovery.php',
+    'src/Job/Job.php',
+];
+
+foreach ($directBoundaries as $relative) {
+    $code = $read($relative);
+    $require(
+        sprintf('%s no longer enforces the paid capability', $relative),
+        null !== $code && str_contains($code, 'CAP_DIRECT'),
+    );
+}
+
+// The module refuses the two Mode B actions server-side, not merely by rendering no form.
+$module = $read('src/BackendModule/MigratorModule.php');
+$require(
+    'the module no longer refuses the Mode B actions server-side',
+    null !== $module && str_contains($module, "DIRECT_ACTIONS = ['mint', 'start_push']"),
+);
 
 // --- 4b. The licence surface stays native and route-free ---------------------------------------
 // Regression guard for a real production defect: the controls used to be submit buttons carrying

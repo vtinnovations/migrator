@@ -154,13 +154,28 @@ $GLOBALS['TL_LANG']['tcmig']['err_no_domain']           = 'No configured domain 
 $GLOBALS['TL_LANG']['tcmig']['err_empty_key']           = 'Enter a licence key.';
 $GLOBALS['TL_LANG']['tcmig']['err_no_state']            = 'No licence is stored to update.';
 $GLOBALS['TL_LANG']['tcmig']['err_generic']             = 'The licence request could not be completed.';
+
+/*
+ * Feature tiers. Export, import and the recovery panel are the Free feature set; direct
+ * server-to-server transfer is the paid capability. These strings name that boundary wherever an
+ * operator meets it: the Settings status block, the locked Server-to-server panel, the refusal a
+ * hand-built POST gets back, and the recovery panel.
+ */
+$GLOBALS['TL_LANG']['tcmig']['panel_capabilities']      = 'Included';
+$GLOBALS['TL_LANG']['tcmig']['cap_archive']             = 'Export, import & recovery';
+$GLOBALS['TL_LANG']['tcmig']['cap_direct']              = 'Server-to-server transfer';
+$GLOBALS['TL_LANG']['tcmig']['tier_locked']             = 'Server-to-server transfer is not included in this licence. Export, import and recovery stay available.';
+$GLOBALS['TL_LANG']['tcmig']['s2s_tier_h']              = 'Not included in this licence';
+$GLOBALS['TL_LANG']['tcmig']['s2s_tier_d']              = 'Direct server-to-server transfer needs a Pro licence. Export a .tcmig package and import it on the destination instead — that path is included in every licence. Both the sending and the receiving installation need the Pro capability for a direct transfer.';
+$GLOBALS['TL_LANG']['tcmig']['rec_tier']                = 'This licence covers export, import and recovery. “Mint pairing token” needs a Pro licence and stays disabled.';
+
 $GLOBALS['TL_LANG']['tcmig']['rec_title']               = 'Contao Migrator — Recovery';
 $GLOBALS['TL_LANG']['tcmig']['rec_login_h']             = 'Contao Migrator — Recovery';
 $GLOBALS['TL_LANG']['tcmig']['rec_token_label']         = 'Operator token';
 $GLOBALS['TL_LANG']['tcmig']['rec_open']                = 'Open recovery panel';
 $GLOBALS['TL_LANG']['tcmig']['rec_no_token']            = 'No operator token exists yet. Start an export or import once in the back end so the token file is created, then come back here.';
 $GLOBALS['TL_LANG']['tcmig']['rec_wrong_token']         = 'Wrong token.';
-$GLOBALS['TL_LANG']['tcmig']['rec_locked']              = 'This plugin is locked. Activate a valid licence under Contao → Settings, section “Migrator Licence management”, to unlock the recovery actions. Status stays readable, but Drive / Migrate / Mint are disabled.';
+$GLOBALS['TL_LANG']['tcmig']['rec_locked']              = 'This plugin is locked. Activate a valid licence under Contao → Settings, legend “V-T.ONE Licence management”, section “Migrator”, to unlock the recovery actions. Status stays readable, but every action is disabled.';
 $GLOBALS['TL_LANG']['tcmig']['rec_drive']               = 'Drive active job';
 $GLOBALS['TL_LANG']['tcmig']['rec_migrate']             = 'Run contao:migrate';
 $GLOBALS['TL_LANG']['tcmig']['rec_mint']                = 'Mint pairing token';

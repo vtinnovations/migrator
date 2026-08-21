@@ -104,11 +104,6 @@ final class Paths
         return $this->scratch().'/pairings.json';
     }
 
-    public function licenseFile(): string
-    {
-        return $this->scratch().'/license.json';
-    }
-
     /**
      * Authoritative entitlement state: one atomically-swapped JSON holding the exact licence bytes
      * (base64), the signed integrity envelope, and the matched domain. Single file so the licence

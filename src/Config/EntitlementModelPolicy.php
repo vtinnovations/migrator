@@ -20,14 +20,29 @@ namespace Vtinnovations\Migrator\Config;
  * signed server dates; the client never invents or resets them.
  *
  * Transitions:
- *   - active trial/free/pro → licensed;
+ *   - active trial/free/pro → licensed with that package's capability grant;
  *   - expired trial/free → unlicensed;
  *   - expired pro → the documented Free feature set only when the SAME authenticated payload signs
  *     `free_available = true`; otherwise unlicensed;
  *   - not-yet-valid or model-incompatible package → unlicensed/invalid.
  *
+ * Capability grants (the paid boundary of this product):
+ *
+ *   | authenticated state              | archive | direct |
+ *   |----------------------------------|---------|--------|
+ *   | pro, active                      |    ✓    |   ✓    |
+ *   | trial, active                    |    ✓    |   ✓    |
+ *   | free, active                     |    ✓    |   —    |
+ *   | pro expired + free_available     |    ✓    |   —    |
+ *   | anything else                    |    —    |   —    |
+ *
+ * A trial carries direct transfer because a trial exists to evaluate the paid capability. Signed
+ * `license_features` entries ADD capabilities on top of the package grant, so V-T.ONE can sell
+ * direct transfer onto a free package without a package change; they can never subtract one, or an
+ * empty feature list would take every otherwise valid licence dark.
+ *
  * The record is already cryptographically authenticated when it reaches here; this class makes no
- * trust decisions, only maps authenticated dates/package to a {@see EntitlementState}.
+ * trust decisions, only maps authenticated dates/package/features to an {@see EntitlementState}.
  */
 final class EntitlementModelPolicy
 {
@@ -39,6 +54,26 @@ final class EntitlementModelPolicy
 
     /** @var list<string> */
     private const ACCEPTED = [self::PKG_TRIAL, self::PKG_FREE, self::PKG_PRO];
+
+    /**
+     * What each accepted package grants while it is active.
+     *
+     * @var array<string, list<string>>
+     */
+    private const PACKAGE_GRANTS = [
+        self::PKG_PRO => [EntitlementState::CAP_ARCHIVE, EntitlementState::CAP_DIRECT],
+        self::PKG_TRIAL => [EntitlementState::CAP_ARCHIVE, EntitlementState::CAP_DIRECT],
+        self::PKG_FREE => [EntitlementState::CAP_ARCHIVE],
+    ];
+
+    /**
+     * The documented Free feature set an expired Pro retains when its own signed payload permits
+     * it. Deliberately the Free grant and not the Pro one: the fallback is a Free licence in all
+     * but name, so it must not keep the paid capability alive past expiry.
+     *
+     * @var list<string>
+     */
+    private const FREE_FALLBACK_GRANTS = [EntitlementState::CAP_ARCHIVE];
 
     public function evaluate(EntitlementRecord $record, int $now, string $matchedDomain): EntitlementState
     {
@@ -86,6 +121,7 @@ final class EntitlementModelPolicy
                 $lifetime,
                 $version,
                 $record->features(),
+                $this->grant(self::PACKAGE_GRANTS[$package], $record),
                 $record->maskedKey(),
                 $startsAt,
                 $record->verifiedAt(),
@@ -102,12 +138,36 @@ final class EntitlementModelPolicy
                 false,
                 $version,
                 $record->features(),
+                $this->grant(self::FREE_FALLBACK_GRANTS, $record),
                 $record->maskedKey(),
                 $startsAt,
                 $record->verifiedAt(),
             );
         }
 
-        return EntitlementState::expired($package, $matchedDomain, $expiresAt, $version);
+        return EntitlementState::expired($package, $matchedDomain, $expiresAt, $version, $record->features());
+    }
+
+    /**
+     * The package grant plus any capability the signed feature list explicitly adds.
+     *
+     * Only ids this product knows are honoured, so an unrecognised server-side feature name grants
+     * nothing rather than something unintended. Additive only — see the class docblock.
+     *
+     * @param list<string> $base
+     *
+     * @return list<string>
+     */
+    private function grant(array $base, EntitlementRecord $record): array
+    {
+        $granted = $base;
+
+        foreach ($record->features() as $feature) {
+            if (\in_array($feature, EntitlementState::CAPABILITIES, true) && !\in_array($feature, $granted, true)) {
+                $granted[] = $feature;
+            }
+        }
+
+        return $granted;
     }
 }

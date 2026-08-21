@@ -17,6 +17,7 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Vtinnovations\Migrator\Config\EntitlementEvaluator;
+use Vtinnovations\Migrator\Config\EntitlementState;
 use Vtinnovations\Migrator\Job\JobFactory;
 use Vtinnovations\Migrator\Security\TokenManager;
 use Vtinnovations\Migrator\Transfer\ChunkAssembler;
@@ -46,7 +47,11 @@ final class IngestController extends AbstractController
 
     public function chunk(Request $request, string $session): JsonResponse
     {
-        if (!$this->license->evaluate()->isLicensed()) {
+        // Receiving is the paid half of a direct transfer on THIS host, so the destination needs
+        // the direct-transfer capability itself — a Free instance may not serve as a landing pad
+        // for someone else's push. The refusal stays generic: an unauthenticated caller learns
+        // only that it was refused, never which condition failed.
+        if (!$this->license->evaluate()->allows(EntitlementState::CAP_DIRECT)) {
             return $this->deny('License required on destination.');
         }
 
@@ -88,7 +93,9 @@ final class IngestController extends AbstractController
 
     public function finalize(Request $request, string $session): JsonResponse
     {
-        if (!$this->license->evaluate()->isLicensed()) {
+        // Same direct-transfer requirement as chunk(): re-checked here because finalize is what
+        // actually enqueues the import, and it is reachable without ever calling chunk().
+        if (!$this->license->evaluate()->allows(EntitlementState::CAP_DIRECT)) {
             return $this->deny('License required on destination.');
         }
 

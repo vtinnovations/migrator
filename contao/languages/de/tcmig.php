@@ -154,13 +154,29 @@ $GLOBALS['TL_LANG']['tcmig']['err_no_domain']           = 'Keine Domain auf dies
 $GLOBALS['TL_LANG']['tcmig']['err_empty_key']           = 'Gib einen Lizenzschlüssel ein.';
 $GLOBALS['TL_LANG']['tcmig']['err_no_state']            = 'Es ist keine Lizenz zum Aktualisieren gespeichert.';
 $GLOBALS['TL_LANG']['tcmig']['err_generic']             = 'Die Lizenzanfrage konnte nicht abgeschlossen werden.';
+
+/*
+ * Funktionsstufen. Export, Import und das Wiederherstellungs-Panel sind der Free-Funktionsumfang;
+ * die direkte Server-zu-Server-Übertragung ist die kostenpflichtige Fähigkeit. Diese Texte
+ * benennen diese Grenze überall, wo ein Operator ihr begegnet: im Statusblock der Einstellungen,
+ * im gesperrten Server-zu-Server-Reiter, in der Ablehnung eines selbst gebauten POST und im
+ * Wiederherstellungs-Panel.
+ */
+$GLOBALS['TL_LANG']['tcmig']['panel_capabilities']      = 'Enthalten';
+$GLOBALS['TL_LANG']['tcmig']['cap_archive']             = 'Export, Import & Wiederherstellung';
+$GLOBALS['TL_LANG']['tcmig']['cap_direct']              = 'Server-zu-Server-Übertragung';
+$GLOBALS['TL_LANG']['tcmig']['tier_locked']             = 'Die Server-zu-Server-Übertragung ist in dieser Lizenz nicht enthalten. Export, Import und Wiederherstellung bleiben verfügbar.';
+$GLOBALS['TL_LANG']['tcmig']['s2s_tier_h']              = 'In dieser Lizenz nicht enthalten';
+$GLOBALS['TL_LANG']['tcmig']['s2s_tier_d']              = 'Die direkte Server-zu-Server-Übertragung erfordert eine Pro-Lizenz. Exportiere stattdessen ein .tcmig-Paket und importiere es auf dem Ziel — dieser Weg ist in jeder Lizenz enthalten. Für eine direkte Übertragung benötigen sowohl die sendende als auch die empfangende Installation die Pro-Fähigkeit.';
+$GLOBALS['TL_LANG']['tcmig']['rec_tier']                = 'Diese Lizenz umfasst Export, Import und Wiederherstellung. „Pairing-Token erzeugen“ erfordert eine Pro-Lizenz und bleibt deaktiviert.';
+
 $GLOBALS['TL_LANG']['tcmig']['rec_title']               = 'Contao Migrator — Wiederherstellung';
 $GLOBALS['TL_LANG']['tcmig']['rec_login_h']             = 'Contao Migrator — Wiederherstellung';
 $GLOBALS['TL_LANG']['tcmig']['rec_token_label']         = 'Operator-Token';
 $GLOBALS['TL_LANG']['tcmig']['rec_open']                = 'Wiederherstellungs-Panel öffnen';
 $GLOBALS['TL_LANG']['tcmig']['rec_no_token']            = 'Es existiert noch kein Operator-Token. Starte einmal einen Export oder Import im Backend, damit die Token-Datei erstellt wird, und komm dann hierher zurück.';
 $GLOBALS['TL_LANG']['tcmig']['rec_wrong_token']         = 'Falscher Token.';
-$GLOBALS['TL_LANG']['tcmig']['rec_locked']              = 'Dieses Plugin ist gesperrt. Aktiviere unter Contao → Einstellungen im Abschnitt „Migrator Licence management“ eine gültige Lizenz, um die Wiederherstellungs-Aktionen freizuschalten. Der Status bleibt lesbar, aber Antreiben / Migrieren / Erzeugen sind deaktiviert.';
+$GLOBALS['TL_LANG']['tcmig']['rec_locked']              = 'Dieses Plugin ist gesperrt. Aktiviere unter Contao → Einstellungen in der Legende „V-T.ONE Licence management“, Abschnitt „Migrator“, eine gültige Lizenz, um die Wiederherstellungs-Aktionen freizuschalten. Der Status bleibt lesbar, aber alle Aktionen sind deaktiviert.';
 $GLOBALS['TL_LANG']['tcmig']['rec_drive']               = 'Aktiven Auftrag antreiben';
 $GLOBALS['TL_LANG']['tcmig']['rec_migrate']             = 'contao:migrate ausführen';
 $GLOBALS['TL_LANG']['tcmig']['rec_mint']                = 'Kopplungstoken erzeugen';

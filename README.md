@@ -148,10 +148,10 @@ Siehe Abschnitt 14.
 | Backend-Modul & AJAX-Routen (`/contao/migrator/...`) | Contao-Backend-Firewall (`_scope: backend`) + CSRF-Token (`REQUEST_TOKEN`) |
 | Lizenzverwaltung (Contao → Einstellungen) | reguläre Contao-Einstellungsseiten-Berechtigung; eigenes Formularfeld ohne zusätzliche Route |
 | Modus-B-Empfang (`/migrator/ingest/...`) | öffentlich erreichbar, aber ausschließlich über eine signierte, einmalige Kopplung authentifiziert — keine Backend-Anmeldung nötig oder möglich |
-| Lizenz-Update-Endpunkt (`/rest/api/v1/migrator-license-updater`) | öffentlich erreichbar, ausschließlich über eine signierte Anfrage authentifiziert (server-zu-server, von V-T.ONE initiiert) |
-| Wiederherstellungs-Panel (`/_tcmig-recovery.php`) | Betreiber-Token, konstantzeitverglichen; unabhängig vom Contao-Backend erreichbar |
+| Lizenz-Update-Endpunkt (server-zu-server) | öffentlich erreichbar, ausschließlich über eine kryptographisch signierte Anfrage authentifiziert; von V-T.ONE initiiert, ohne Backend-Anmeldung |
+| Wiederherstellungs-Panel (`/_tcmig-recovery.php`) | Betreiber-Token; unabhängig vom Contao-Backend erreichbar |
 
-Jede geschützte Operation prüft den gültigen, kryptographisch authentifizierten Lizenzstatus **unmittelbar an ihrer eigenen Grenze** erneut — nicht nur einmalig am äußeren Zugriffspunkt.
+Jede geschützte Operation prüft den gültigen Berechtigungsstatus **unmittelbar an ihrer eigenen Grenze** erneut — nicht nur einmalig am äußeren Zugriffspunkt — und prüft dabei genau die Berechtigungsstufe, die diese Operation voraussetzt. Auch die Auftragsverarbeitung prüft erneut, bevor sie einen Auftrag weiterführt: Ein Auftrag der Pro-Stufe bleibt stehen, sobald die Berechtigung entfällt, unabhängig davon, über welchen Zugriffspunkt er angestoßen wurde. Das Ausblenden einer Schaltfläche gilt an keiner Stelle als Zugriffsschutz.
 
 ## 14. Lizenz- und Berechtigungsverhalten
 
@@ -179,11 +179,26 @@ Angezeigt werden zusätzlich: maskierter Schlüssel, Paket, „Gültig ab“, �
 
 **Bindung:** Eine Lizenz wird an einen exakten, in den Contao-Root-Seiten konfigurierten Hostnamen gebunden (kein `www.`-Abgleich, keine Subdomain-Gleichsetzung). Fehlt eine passende Domain-Konfiguration, kann keine Aktivierung erfolgen — der Hinweis auf der Einstellungsseite zeigt die konfigurierten Hosts an.
 
-**Prüfungen:** Übliche Berechtigungsprüfungen laufen lokal (Signatur, Gültigkeitszeitraum, Domainbindung). Für Aktivierung und Aktualisierung wird ein einziger, fest im Code hinterlegter HTTPS-Dienst kontaktiert. Zusätzlich kann V-T.ONE serverseitig eine Lizenzaktualisierung an die Installation zustellen (signiert, ohne Backend-Anmeldung, ausschließlich über eine Anfragesignatur authentifiziert).
+**Prüfungen:** Übliche Berechtigungsprüfungen laufen vollständig lokal und ohne Netzwerkzugriff. Für Aktivierung und Aktualisierung wird ein einziger, fest im Code hinterlegter HTTPS-Dienst kontaktiert. Zusätzlich kann V-T.ONE serverseitig eine Lizenzaktualisierung an die Installation zustellen (signiert, ohne Backend-Anmeldung, ausschließlich über eine Anfragesignatur authentifiziert).
 
 **Speicherung:** Der Lizenzstatus liegt außerhalb des öffentlichen Web-Roots unter `var/migrator/`.
 
-**Funktionsumfang je Paket:** In der aktuellen Implementierung schaltet jede gültige Lizenz (Trial, Free oder Pro) denselben vollständigen Funktionsumfang frei — der Unterschied zwischen den Paketen liegt in Laufzeit und Konditionen, nicht in einer serverseitig durchgesetzten Funktionsgrenze.
+### Funktionsstufen
+
+Der Funktionsumfang ist in zwei Stufen unterteilt. Beide werden serverseitig durchgesetzt.
+
+| Funktionsbereich | Free | Pro |
+|---|:--:|:--:|
+| Export, Import und Wiederherstellung | Enthalten | Enthalten |
+| Direkte Server-zu-Server-Übertragung | Nicht enthalten | Enthalten |
+
+- **Export, Import und Wiederherstellung bilden den Free-Funktionsumfang.** Jede gültige Lizenz öffnet das Backend-Modul, beide manuellen Übertragungsrichtungen sowie alle Aktionen des Wiederherstellungs-Panels.
+- **Die direkte Server-zu-Server-Übertragung ist die kostenpflichtige Funktion.** Eine aktive Testlizenz enthält sie, da eine Testphase gerade der Bewertung dieser Funktion dient; mit Ablauf der Testlizenz entfällt sie. Sie ist nicht Teil des Free-Rückfalls einer abgelaufenen Pro-Lizenz.
+- **Beide Installationen benötigen die Berechtigung.** Eine direkte Übertragung setzt sie auf der sendenden *und* der empfangenden Installation voraus. Eine Lizenz kann beide Hosts abdecken, wenn beide Hostnamen zu ihrem lizenzierten Domainumfang gehören. Eine Installation mit Free-Umfang kann nicht als Ziel für die direkte Übertragung einer anderen Installation dienen.
+- **Bestehende Daten bleiben zugänglich.** Fortschrittsanzeige, Download eines bereits erzeugten Pakets sowie Abbrechen und Löschen bleiben im Free-Umfang. Eine abgelaufene Pro-Lizenz hinterlässt daher keinen Auftrag, den der Bediener nicht mehr aufräumen kann.
+- **Der Umfang kann ohne Paketwechsel erweitert werden.** V-T.ONE kann die direkte Übertragung für eine bestehende Lizenz freischalten, ohne deren Paket zu ändern. Eine solche Freischaltung erweitert den Umfang ausschließlich; sie kann nie etwas entfernen, was das Paket selbst bereits gewährt.
+
+Der Lizenzabschnitt in den Einstellungen zeigt an, welche Funktionsbereiche die installierte Lizenz enthält. Die Frage „Warum ist die Server-zu-Server-Übertragung gesperrt?“ ist damit direkt auf der Seite beantwortet.
 
 ## 15. Funktionsstatus-Tabelle
 
@@ -191,18 +206,19 @@ Angezeigt werden zusätzlich: maskierter Schlüssel, Paket, „Gültig ab“, �
 |---|---|
 | Export als `.tcmig`-Paket | Verfügbar |
 | Import per Upload (Einzeldatei oder geteilt) | Verfügbar |
-| Server-zu-Server-Übertragung (Modus B) | Verfügbar |
+| Server-zu-Server-Übertragung (Modus B) | Nur Pro |
 | Serialisierungssichere Host-Umschreibung | Verfügbar |
 | Geheimnis-Mitnahme (APP_SECRET u.&nbsp;a., passphrase-verschlüsselt) | Verfügbar |
 | Vorab-Prüfung von `composer.json` | Verfügbar |
 | Kompatibilitätsprüfung (PHP/Contao-Version) | Verfügbar |
 | Unbeaufsichtigter Fortschritt per Cron | Verfügbar |
-| Eigenständiges Wiederherstellungs-Panel | Verfügbar |
+| Eigenständiges Wiederherstellungs-Panel | Free und Pro |
 | Lizenzverwaltung (Aktivieren/Aktualisieren/Entfernen) | Verfügbar |
+| Kopplungstoken für Modus B erzeugen | Nur Pro |
+| Funktionsdifferenzierung nach Lizenzpaket (Free vs. Pro) | Verfügbar |
 | Frontend-Modul / Inhaltselement | Nicht zutreffend |
-| Funktionsdifferenzierung nach Lizenzpaket (Free vs. Pro) | Nicht zutreffend (aktuelle Implementierung) |
 
-*Alle mit „Verfügbar“ markierten Funktionen setzen eine aktivierte, gültige Lizenz voraus (siehe Abschnitt 14).*
+*Jede Funktion dieser Tabelle setzt eine aktivierte, gültige Lizenz voraus — auch die mit „Free und Pro“ gekennzeichneten (siehe Abschnitt 14). „Nur Pro“ bezeichnet Funktionen, die zusätzlich den Pro-Funktionsumfang erfordern.*
 
 ## 16. Sicherheitsmodell
 
@@ -213,11 +229,11 @@ Angezeigt werden zusätzlich: maskierter Schlüssel, Paket, „Gültig ab“, �
 - **Private Ablage:** Betriebsdaten (Aufträge, Backups, Lizenzstatus, Betreiber-Token) liegen außerhalb des öffentlichen Web-Roots.
 - **Sicheres Fehlverhalten:** Ein fehlender oder ungültiger Lizenznachweis, eine fehlgeschlagene Prüfsumme oder eine ungültige Signatur blockiert die Operation, statt stillschweigend fortzufahren; ein bestehender, bereits laufender Auftrag wird dabei nicht gelöscht, sondern pausiert automatisch weitergeführt, sobald die Lizenz wieder gültig ist.
 - **Umgang mit Geheimnissen:** Die Export-Passphrase liegt ausschließlich in einer temporären, restriktiv berechtigten (0600) Zwischendatei — niemals im Auftragsdatensatz selbst — und wird nach Gebrauch gelöscht; mitgenommene Anwendungsgeheimnisse reisen verschlüsselt im Paket.
-- **Geschwärzte Protokollierung:** Die projekteigene automatisierte Testsuite erzwingt, dass Lizenzschlüssel, Signaturen, Einmalwerte (Nonces) und rohe Anfrage-/Antwortinhalte niemals in Protokollen, Debug-Ausgaben oder der Browseransicht erscheinen.
+- **Geschwärzte Protokollierung:** Die projekteigene automatisierte Testsuite erzwingt, dass Lizenzschlüssel und vertrauliche Inhalte der Lizenzkommunikation niemals in Protokollen, Debug-Ausgaben oder der Browseransicht erscheinen.
 
 ## 17. Betriebssicherheit
 
-Das eigenständige Wiederherstellungs-Panel (`_tcmig-recovery.php`) wird bei jedem Kernel-Start automatisch (idempotent, per MD5-Vergleich) in das Web-Root-Verzeichnis gespiegelt und funktioniert **unabhängig vom Contao-Backend** — etwa wenn eine versionsübergreifende Wiederherstellung eine vom Backend benötigte Tabelle noch nicht angelegt hat. Es authentifiziert über das Betreiber-Token (konstantzeitverglichen) und bietet: Statusanzeige, Auftrag antreiben, `contao:migrate` ausführen (inkl. erneuter Asset-Veröffentlichung), Kopplungstoken erzeugen, Passphrase nachreichen, Composer-Warnungen bestätigen, Auftrag abbrechen. Jede verändernde Aktion prüft denselben autoritativen Lizenzstatus wie das Backend-Modul; der Status bleibt auch ohne gültige Lizenz lesbar, die steuernden Aktionen bleiben jedoch gesperrt.
+Das eigenständige Wiederherstellungs-Panel (`_tcmig-recovery.php`) wird bei jedem Kernel-Start automatisch und idempotent in das Web-Root-Verzeichnis gespiegelt und funktioniert **unabhängig vom Contao-Backend** — etwa wenn eine versionsübergreifende Wiederherstellung eine vom Backend benötigte Tabelle noch nicht angelegt hat. Es authentifiziert über das Betreiber-Token und bietet: Statusanzeige, Auftrag antreiben, `contao:migrate` ausführen (inkl. erneuter Asset-Veröffentlichung), Kopplungstoken erzeugen, Passphrase nachreichen, Composer-Warnungen bestätigen, Auftrag abbrechen. Jede verändernde Aktion prüft denselben autoritativen Berechtigungsstatus wie das Backend-Modul und dabei genau die Stufe, die sie voraussetzt: Die Wiederherstellungs-Aktionen gehören zum Free-Umfang, das Erzeugen eines Kopplungstokens erfordert den Pro-Umfang. Der Status bleibt auch ohne gültige Lizenz lesbar, damit eine Störung diagnostizierbar bleibt; die steuernden Aktionen bleiben gesperrt.
 
 Da der Token als URL-Parameter übertragen werden kann und damit in Zugriffsprotokollen landen kann, ist das Panel ausdrücklich als Notfallwerkzeug gedacht — bei Bedarf sollte das Token danach rotiert werden.
 
@@ -225,7 +241,7 @@ Da der Token als URL-Parameter übertragen werden kann und damit in Zugriffsprot
 
 | Pfad | Inhalt |
 |---|---|
-| `var/migrator/` (konfigurierbar über `scratch_dir`) | Aufträge, Backups, Staging-Bereich, Schnappschüsse, eingehende Modus-B-Übertragungen, Lizenzstatus, Betreiber-Token, Kopplungstoken, Replay-Journal für den Lizenz-Update-Endpunkt, Bundle-Konfiguration |
+| `var/migrator/` (konfigurierbar über `scratch_dir`) | Aufträge, Backups, Staging-Bereich, Schnappschüsse, eingehende Modus-B-Übertragungen, Bundle-Konfiguration sowie der private Berechtigungs- und Betriebszustand |
 | `public/_tcmig-recovery.php` (bzw. `web/...`) | automatisch gespiegeltes, eigenständiges Wiederherstellungs-Panel |
 
 ## 19. Externe Kommunikation
@@ -235,10 +251,12 @@ Alle ausgehenden Verbindungen laufen ausschließlich über HTTPS zu **einem einz
 | Zweck | Auslöser |
 |---|---|
 | Lizenzaktivierung / -aktualisierung | Bediener klickt „Aktivieren“ bzw. „Aktualisieren“ auf der Einstellungsseite |
-| Nutzungssignal (Projekt + Domain, höchstens einmal je Anfrage) | Aufruf des Backend-Moduls |
-| Sitzungssignal (Domain + Schlüssel, höchstens einmal je authentifizierter Sitzung) | Aufruf des Backend-Moduls mit gültiger Lizenz |
+| Nutzungssignal — übermittelt Projektname und Hostnamen, höchstens einmal je Anfrage | Aufruf des Backend-Moduls |
+| Sitzungssignal — übermittelt Hostnamen und Lizenzschlüssel zur Lizenzzuordnung, höchstens einmal je authentifizierter Backend-Sitzung | Aufruf des Backend-Moduls bei gültiger Lizenz |
 
-Zusätzlich kann V-T.ONE serverseitig eine signierte Lizenzaktualisierung **an** die Installation senden (eingehend, über den Lizenz-Update-Endpunkt).
+Zusätzlich kann V-T.ONE serverseitig eine signierte Lizenzaktualisierung **an** die Installation senden (eingehend, server-zu-server).
+
+Beide Signale werden ausschließlich serverseitig gesendet; der Lizenzschlüssel erscheint zu keinem Zeitpunkt in der Browseransicht, in Protokollen oder in clientseitigem Code.
 
 Bei einer Server-zu-Server-Übertragung (Modus B) kommuniziert die Quellinstallation ausschließlich mit der vom Bediener angegebenen **eigenen** Zielinstallation — kein Drittdienst ist daran beteiligt.
 
@@ -246,7 +264,7 @@ Bei einer Server-zu-Server-Übertragung (Modus B) kommuniziert die Quellinstalla
 
 ## 20. Protokollierung und Schwärzung vertraulicher Daten
 
-Klassen, die Lizenzpakete, Signaturen oder Anfrage-/Antwortinhalte verarbeiten, erhalten in der Dependency-Injection-Konfiguration bewusst **keinen** Logger — es gibt technisch keine Stelle, an der sensible Daten protokolliert werden könnten. Auftrags-Protokolle (im Backend-Monitor sichtbar) enthalten ausschließlich Fortschritts- und Fehlermeldungen zur Migration selbst, niemals Lizenzschlüssel, Signaturen oder rohe Netzwerknutzlasten.
+Die Verarbeitung der Lizenzkommunikation ist bewusst ohne Protokollierung ausgeführt: Es existiert keine Stelle, an der vertrauliche Lizenzdaten in ein Protokoll gelangen könnten. Auftrags-Protokolle (im Backend-Monitor sichtbar) enthalten ausschließlich Fortschritts- und Fehlermeldungen zur Migration selbst, niemals Lizenzschlüssel oder vertrauliche Inhalte der Lizenzkommunikation. Die automatisierte Testsuite prüft diese Zusage bei jedem Durchlauf.
 
 ## 21. Deployment
 
@@ -297,7 +315,8 @@ php tools/verify-licence-surface.php /pfad/zum/projekt  # Laufzeit-Abnahme der L
 - Die Datenbank-Dump-/Restore-Logik ist auf MySQL/MariaDB ausgelegt; andere Datenbankplattformen sind nicht das Zielszenario der produktiven Nutzung.
 - `contao:migrate` wird nach einem Import bewusst nicht automatisch ausgeführt — ein reiner Host-Umzug soll exakt die Quellversionen beibehalten, nicht gleichzeitig aktualisieren; der Bediener führt diesen Schritt selbst aus, wenn später eine Contao-Aktualisierung ansteht.
 - Composer-Repositories vom Typ „lokaler Pfad“ oder VCS sowie `dev`-Versionsbindungen können `composer install` auf dem Zielsystem verhindern; die Vorab-Prüfung warnt, entscheidet aber nicht automatisch.
-- Der aktuelle Implementierungsstand unterscheidet den Funktionsumfang nicht nach Lizenzpaket (Trial/Free/Pro schalten denselben Umfang frei); jede Nutzung erfordert dennoch eine aktivierte Lizenz.
+- Die direkte Server-zu-Server-Übertragung erfordert die Fähigkeit auf der sendenden *und* der empfangenden Installation; eine Pro-Quelle kann nicht in ein Free-Ziel schieben.
+- Der Funktionsumfang ergibt sich aus der signierten Lizenz. Ändert V-T.ONE den Umfang eines Pakets nachträglich, behält eine bereits aktivierte Lizenz ihren bisherigen Umfang, bis der Bediener „Lizenz aktualisieren“ ausführt oder V-T.ONE eine Aktualisierung zustellt.
 
 ## 26. Lizenz- und Urheberrechtsinformationen
 

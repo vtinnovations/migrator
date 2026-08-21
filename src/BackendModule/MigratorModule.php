@@ -58,6 +58,15 @@ final class MigratorModule
     /** Inline pairing-token result, shown inside the Server-to-Server tab after a mint. */
     private string $mintResult = '';
 
+    /**
+     * Module actions that perform a direct server-to-server transfer and therefore need
+     * {@see EntitlementState::CAP_DIRECT} on top of the base tier: minting the pairing a remote
+     * source will authenticate with, and starting the push itself.
+     *
+     * @var list<string>
+     */
+    private const DIRECT_ACTIONS = ['mint', 'start_push'];
+
     public function __construct()
     {
         $container = System::getContainer();
@@ -92,7 +101,10 @@ final class MigratorModule
         // Whole bundle is licence-gated. Activation/refresh/removal lives on the authoritative
         // Contao → Settings surface (the tl_settings DCA section); until a valid signed licence
         // exists there, this module shows only a pointer to it — never its own key form.
-        if (!$this->licensed()) {
+        //
+        // The dashboard as a whole sits at the base tier: export, import and recovery are the Free
+        // feature set, so any valid licence opens it. The Mode B panel inside gates separately.
+        if (!$this->allows(EntitlementState::CAP_ARCHIVE)) {
             return $this->renderLicenseGate($notice);
         }
 
@@ -110,15 +122,17 @@ final class MigratorModule
     }
 
     /**
-     * Server-side licence gate for this module. Evaluated once per request from the authoritative
-     * stored state (the evaluation re-runs the full crypto pipeline), then reused as an immutable
-     * result — the module never caches a bare boolean across requests and never trusts the UI.
+     * Server-side capability gate for this module. Evaluated once per request from the
+     * authoritative stored state (the evaluation re-runs the full crypto pipeline), then reused as
+     * an immutable result — the module never caches a bare boolean across requests and never
+     * trusts the UI. Callers must name the capability they need; there is no "am I licensed?"
+     * shortcut here, because the answer would not distinguish the Free tier from the paid one.
      */
-    private function licensed(): bool
+    private function allows(string $capability): bool
     {
         $this->entitlement ??= $this->license->evaluate();
 
-        return $this->entitlement->isLicensed();
+        return $this->entitlement->allows($capability);
     }
 
     /**
@@ -177,8 +191,15 @@ final class MigratorModule
 
         // Server-side licence gate: every module action is refused until a valid signed licence
         // exists. Activation itself is not handled here — it lives on the Settings surface.
-        if (!$this->licensed()) {
+        if (!$this->allows(EntitlementState::CAP_ARCHIVE)) {
             return '';
+        }
+
+        // The Mode B actions need the paid capability, checked HERE at the action boundary. The
+        // s2s panel already renders no controls without it, but a hidden form is not
+        // authorization: this is what actually refuses a hand-built POST.
+        if (\in_array($action, self::DIRECT_ACTIONS, true) && !$this->allows(EntitlementState::CAP_DIRECT)) {
+            return $this->box('error', $this->t('tier_locked'));
         }
 
         switch ($action) {
@@ -413,10 +434,7 @@ final class MigratorModule
         // ── Panels ──
         $html .= '<div class="tcmig-panel" data-panel="export">'.$this->exportCard($tf).'</div>';
         $html .= '<div class="tcmig-panel" data-panel="import">'.$this->importForms($tf, $isess).'</div>';
-        $html .= '<div class="tcmig-panel" data-panel="s2s">'
-            .'<div class="tcmig-note">'.$this->t('s2s_intro').'</div>'
-            .$this->mintResult
-            .'<div class="tcmig-grid">'.$this->receiveCard($tf).$this->sendCard($tf).'</div></div>';
+        $html .= '<div class="tcmig-panel" data-panel="s2s">'.$this->s2sPanel($tf).'</div>';
         $html .= '<div class="tcmig-panel" data-panel="recovery">'.$this->recoveryCard($recoveryUrl, $opToken).'</div>';
 
         $html .= $this->jobList($self);
@@ -770,6 +788,26 @@ JS;
             .'<div class="tcmig-field"><label>'.$this->t('export_pass').' <span class="tcmig-muted">'.$this->t('export_pass_hint').'</span></label>'
             .'<input type="password" name="passphrase" class="tcmig-input" autocomplete="new-password"></div>'
             .'<button type="submit" class="tcmig-btn">'.$this->t('export_btn').'</button></form></div>';
+    }
+
+    /**
+     * Server-to-server panel. Without the direct-transfer capability it states why and renders no
+     * controls at all — an inert form the operator cannot submit is worse than a plain
+     * explanation, and the tab stays visible so the tier is discoverable rather than mysterious.
+     * Presentation only: handlePost() refuses both actions whatever is rendered here.
+     */
+    private function s2sPanel(string $tf): string
+    {
+        $html = '<div class="tcmig-note">'.$this->t('s2s_intro').'</div>';
+
+        if (!$this->allows(EntitlementState::CAP_DIRECT)) {
+            return $html.'<div class="tcmig-card">'
+                .'<div class="tcmig-card-h">'.$this->t('s2s_tier_h').'</div>'
+                .'<div class="tcmig-card-d">'.$this->t('s2s_tier_d').'</div></div>';
+        }
+
+        return $html.$this->mintResult
+            .'<div class="tcmig-grid">'.$this->receiveCard($tf).$this->sendCard($tf).'</div>';
     }
 
     private function receiveCard(string $tf): string

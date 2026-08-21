@@ -126,9 +126,10 @@ final class SourceLayoutTest extends TestCase
     }
 
     /**
-     * The gate is not one convenience boolean: the evaluator exposes only the immutable result, and
+     * The gate is not one convenience boolean: the evaluator exposes only the immutable result,
      * enforcement is repeated at each protected boundary — including inside the job pipeline, so a
-     * bypassed request-level check still cannot advance a migration.
+     * bypassed request-level check still cannot advance a migration — and every boundary names the
+     * capability it needs rather than asking whether any licence exists.
      */
     public function testNoSingleBooleanGate(): void
     {
@@ -152,9 +153,18 @@ final class SourceLayoutTest extends TestCase
             $code = (string) file_get_contents(\dirname(__DIR__, 2).'/'.$relative);
 
             self::assertStringContainsString(
-                'isLicensed()',
+                'allows(',
                 $code,
                 sprintf('%s must enforce entitlement at its own boundary.', $relative),
+            );
+
+            // And it must name the capability it needs. A boundary asking "am I licensed?" cannot
+            // tell the Free tier from the paid one, so it would hand a Mode B request to a Free
+            // licence — the exact bypass the tier split exists to prevent.
+            self::assertDoesNotMatchRegularExpression(
+                '/!\s*\$[\w>()\-]*isLicensed\(\)/',
+                $code,
+                sprintf('%s gates on isLicensed() instead of a named capability.', $relative),
             );
         }
     }

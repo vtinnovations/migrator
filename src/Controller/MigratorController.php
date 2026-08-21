@@ -29,6 +29,7 @@ use Vtinnovations\Migrator\Job\JobFactory;
 use Vtinnovations\Migrator\Job\JobRunner;
 use Vtinnovations\Migrator\Job\JobStore;
 use Vtinnovations\Migrator\Config\EntitlementEvaluator;
+use Vtinnovations\Migrator\Config\EntitlementState;
 use Vtinnovations\Migrator\Support\Messages;
 use Vtinnovations\Migrator\Transfer\ChunkAssembler;
 use Vtinnovations\Migrator\Transfer\PackageBuilder;
@@ -72,7 +73,10 @@ final class MigratorController extends AbstractController
      */
     public function status(Request $request, string $id): JsonResponse
     {
-        if (!$this->license->evaluate()->isLicensed()) {
+        // Reading progress is job management, not the paid transport: it needs the base tier only,
+        // so an operator whose direct-transfer entitlement lapsed can still see what a stalled
+        // Mode B job is doing (and then cancel or delete it).
+        if (!$this->license->evaluate()->allows(EntitlementState::CAP_ARCHIVE)) {
             return $this->noLicense();
         }
 
@@ -119,8 +123,20 @@ final class MigratorController extends AbstractController
      */
     public function tick(Request $request, string $id): JsonResponse
     {
-        if (!$this->license->evaluate()->isLicensed()) {
+        // Advancing a job IS the protected operation, so this boundary asks for the capability the
+        // job itself requires — base tier for a manual package, direct transfer for a Mode B push
+        // or a received payload. JobRunner repeats the same check at the pipeline, so a bypassed
+        // controller still cannot move paid work forward.
+        $entitlement = $this->license->evaluate();
+
+        if (!$entitlement->allows(EntitlementState::CAP_ARCHIVE)) {
             return $this->noLicense();
+        }
+
+        $pending = $this->store->load($id);
+
+        if (null !== $pending && !$entitlement->allows($pending->requiredCapability())) {
+            return $this->noCapability();
         }
 
         if (\PHP_SESSION_ACTIVE === session_status()) {
@@ -146,7 +162,8 @@ final class MigratorController extends AbstractController
 
     public function download(Request $request, string $id): Response
     {
-        if (!$this->license->evaluate()->isLicensed()) {
+        // Retrieving an already-built package is rescue/cleanup rather than the paid transport.
+        if (!$this->license->evaluate()->allows(EntitlementState::CAP_ARCHIVE)) {
             throw $this->createAccessDeniedException('License required.');
         }
 
@@ -251,7 +268,7 @@ final class MigratorController extends AbstractController
      */
     public function uploadPart(Request $request, string $isess): JsonResponse
     {
-        if (!$this->license->evaluate()->isLicensed()) {
+        if (!$this->license->evaluate()->allows(EntitlementState::CAP_ARCHIVE)) {
             return $this->noLicense();
         }
 
@@ -283,7 +300,7 @@ final class MigratorController extends AbstractController
      */
     public function assembleImport(Request $request, string $isess): JsonResponse
     {
-        if (!$this->license->evaluate()->isLicensed()) {
+        if (!$this->license->evaluate()->allows(EntitlementState::CAP_ARCHIVE)) {
             return $this->noLicense();
         }
 
@@ -318,7 +335,7 @@ final class MigratorController extends AbstractController
     /** Request cancellation of a running/pending/paused job (stops it mid-tick). */
     public function cancel(Request $request, string $id): JsonResponse
     {
-        if (!$this->license->evaluate()->isLicensed()) {
+        if (!$this->license->evaluate()->allows(EntitlementState::CAP_ARCHIVE)) {
             return $this->noLicense();
         }
 
@@ -334,7 +351,7 @@ final class MigratorController extends AbstractController
     /** Delete a finished/failed/cancelled job and all its artefacts. Refuses while still active. */
     public function delete(Request $request, string $id): JsonResponse
     {
-        if (!$this->license->evaluate()->isLicensed()) {
+        if (!$this->license->evaluate()->allows(EntitlementState::CAP_ARCHIVE)) {
             return $this->noLicense();
         }
 
@@ -367,6 +384,21 @@ final class MigratorController extends AbstractController
             'success' => false,
             'reason' => 'no_license',
             'error' => $this->t('license_locked'),
+            'cta_url' => 'https://v-t.one',
+        ]);
+    }
+
+    /**
+     * Refusal for a valid licence whose tier does not include the requested work (a Mode B job on
+     * the Free tier). Kept apart from noLicense() so the dashboard can say "upgrade" rather than
+     * "activate", which is the only actionable difference for the operator.
+     */
+    private function noCapability(): JsonResponse
+    {
+        return new JsonResponse([
+            'success' => false,
+            'reason' => 'capability_required',
+            'error' => $this->t('tier_locked'),
             'cta_url' => 'https://v-t.one',
         ]);
     }
